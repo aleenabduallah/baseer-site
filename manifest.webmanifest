@@ -1,0 +1,22 @@
+{
+  "id": "./index.html",
+  "name": "بصير - المساعد البصري الصوتي",
+  "short_name": "بصير",
+  "description": "مساعد بصري صوتي يساعدك على التعرف إلى الأشياء أمام الكاميرا.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f8f5",
+  "theme_color": "#102b32",
+  "icons": [
+    {
+      "src": "./app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
