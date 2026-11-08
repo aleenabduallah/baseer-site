@@ -137,3 +137,13 @@ body { min-height: 100vh; min-height: 100dvh; background: #102b32; color: var(--
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+.ai-settings-button { border: 0; border-radius: 999px; width: 44px; height: 44px; background: rgba(255,255,255,.12); color: #fff; font-size: 20px; cursor: pointer; margin-inline-start: auto; }
+.ai-settings-dialog { border: 0; border-radius: 18px; padding: 0; width: min(92vw, 430px); color: #17363d; }
+.ai-settings-dialog::backdrop { background: rgba(5,20,24,.6); }
+.ai-settings-form { padding: 24px; display: grid; gap: 12px; }
+.ai-settings-form input { width: 100%; box-sizing: border-box; border: 1px solid #b8c9c9; border-radius: 10px; padding: 12px; font-size: 16px; }
+.ai-settings-form p { font-size: 13px; color: #60777b; }
+.ai-settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ai-settings-actions button { border: 0; border-radius: 10px; padding: 10px 14px; background: #1f6b6d; color: #fff; cursor: pointer; }
+.ai-settings-actions .danger-button { background: #8a4b4b; }

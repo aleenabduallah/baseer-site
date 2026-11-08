@@ -30,6 +30,7 @@
         <span class="status-dot" aria-hidden="true"></span>
         الكاميرا متوقفة
       </span>
+      <button id="ai-settings-button" class="ai-settings-button" type="button" aria-label="إعداد الذكاء البصري">⚙</button>
     </header>
 
     <section class="camera-stage" id="camera-stage" aria-label="كاميرا بصير">
@@ -57,6 +58,20 @@
       <p class="safety-note">مساعد تجريبي؛ لا يغني عن العصا البيضاء أو وسائل التنقّل الآمنة.</p>
     </footer>
   </main>
+
+  <dialog id="ai-settings-dialog" class="ai-settings-dialog">
+    <form method="dialog" class="ai-settings-form">
+      <h2>إعداد الذكاء البصري</h2>
+      <label for="gemini-api-key">مفتاح Google Gemini API</label>
+      <input id="gemini-api-key" type="password" autocomplete="off" placeholder="أدخل المفتاح هنا">
+      <p>يُحفظ المفتاح على هذا الجهاز فقط ولا يُرفع إلى GitHub.</p>
+      <div class="ai-settings-actions">
+        <button id="save-api-key" type="button">حفظ</button>
+        <button id="clear-api-key" type="button" class="danger-button">حذف المفتاح</button>
+        <button value="cancel">إغلاق</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" defer></script>
