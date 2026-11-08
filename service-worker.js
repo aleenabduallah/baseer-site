@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "baseer-shell-v5";
+const CACHE_NAME = "baseer-shell-v4";
 const APP_SHELL = [
   "./",
   "./index.html",

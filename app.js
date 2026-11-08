@@ -347,59 +347,24 @@ async function detectObjects(forceAnnouncement = false) {
     if (forceAnnouncement) setDescription("لحظة، ما زلت أتعرف إلى ما أمامك.", true);
     return;
   }
-  if (!stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+  if (!model || !stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     if (forceAnnouncement) setDescription("الكاميرا ليست جاهزة بعد. قل: ابدأ يا بصير.", true);
     return;
   }
-
-  const apiKey = localStorage.getItem("baseer_gemini_api_key");
-  if (apiKey) {
-    loading = true;
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.min(video.videoWidth, 1280);
-      canvas.height = Math.round(canvas.width * video.videoHeight / video.videoWidth);
-      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-      const base64 = canvas.toDataURL("image/jpeg", 0.82).split(",")[1];
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [
-            { text: "صف بدقة وبالعربية ما يظهر في هذه الصورة للمستخدم المكفوف بصريًا. اذكر الشيء الرئيسي، موقعه تقريبًا، وأي خطر أو حركة مهمة. استخدم جملة واحدة أو اثنتين فقط، من دون تنسيق أو تقديرات غير مؤكدة." },
-            { inline_data: { mime_type: "image/jpeg", data: base64 } }
-          ] }]
-        })
-      });
-      if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
-      const result = await response.json();
-      const message = result.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join(" ").trim();
-      if (!message) throw new Error("Gemini returned no description");
-      setDescription(message, true);
-      lastSpokenAt = Date.now();
-      return;
-    } catch (error) {
-      console.error("AI object description failed:", error);
-      setDescription("تعذّر الذكاء البصري. تأكد من صحة المفتاح واتصال الإنترنت. سأستخدم الكشف المحلي كبديل.", true);
-    } finally {
-      loading = false;
-    }
-  }
-
-  if (!model) return;
   loading = true;
   try {
     const predictions = await model.detect(video, 20, 0.08, 0.55);
     const message = describePredictions(predictions, forceAnnouncement);
     if (forceAnnouncement && !message) {
-      setDescription("لم أتعرف إلى شيء واضح الآن. أضبط مفتاح Gemini للاكتشاف الدقيق، أو وجّه الكاميرا نحو الشيء وحاول مرة أخرى.", true);
+      setDescription("لم أتعرف إلى شيء واضح الآن. وجّه الكاميرا نحو الشيء وحاول مرة أخرى.", true);
     } else if (message && (forceAnnouncement || (message !== lastAnnouncement && Date.now() - lastSpokenAt > 4000))) {
       setDescription(message, true);
       lastSpokenAt = Date.now();
     }
   } catch (error) {
     console.error("Object detection failed:", error);
-    setDescription("تعذّر تحليل صورة الكاميرا. أوقف المساعدة ثم حاول البدء من جديد.", true);
+    setDescription("تعذّر تحليل صورة الكاميرا. أوقف المساعدة ثم حاول البدء من جديد.");
+    stopCamera();
   } finally {
     loading = false;
   }
@@ -507,29 +472,6 @@ stage.addEventListener("pointerup", () => {
     speak("حاضر، أشغّل الكاميرا الآن.");
     startCamera();
   }
-});
-
-const aiSettingsButton = document.getElementById("ai-settings-button");
-const aiSettingsDialog = document.getElementById("ai-settings-dialog");
-const geminiApiKeyInput = document.getElementById("gemini-api-key");
-const savedApiKey = localStorage.getItem("baseer_gemini_api_key");
-if (savedApiKey) geminiApiKeyInput.value = savedApiKey;
-
-aiSettingsButton.addEventListener("click", () => aiSettingsDialog.showModal());
-document.getElementById("save-api-key").addEventListener("click", () => {
-  const value = geminiApiKeyInput.value.trim();
-  if (!value) {
-    setDescription("أدخل مفتاح Gemini أولًا.", true);
-    return;
-  }
-  localStorage.setItem("baseer_gemini_api_key", value);
-  aiSettingsDialog.close();
-  setDescription("تم حفظ مفتاح الذكاء البصري على هذا الجهاز. قل: ماذا ترى؟", true);
-});
-document.getElementById("clear-api-key").addEventListener("click", () => {
-  localStorage.removeItem("baseer_gemini_api_key");
-  geminiApiKeyInput.value = "";
-  setDescription("تم حذف مفتاح الذكاء البصري من هذا الجهاز.", true);
 });
 
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
