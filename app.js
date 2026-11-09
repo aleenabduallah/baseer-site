@@ -226,6 +226,7 @@ function startListening() {
 
 window.addEventListener("baseer:conversation-start", () => {
   voiceConversationActive = true;
+  document.documentElement.classList.add("voice-conversation-active");
   startCamera();
   if (recognitionRestartTimer) window.clearTimeout(recognitionRestartTimer);
   recognitionRestartTimer = null;
@@ -236,6 +237,7 @@ window.addEventListener("baseer:conversation-start", () => {
 
 window.addEventListener("baseer:conversation-stop", () => {
   voiceConversationActive = false;
+  document.documentElement.classList.remove("voice-conversation-active");
   startListening();
 });
 
@@ -536,7 +538,7 @@ function stopCamera() {
   stage.classList.remove("is-active");
   placeholder.hidden = false;
   setStatus("الكاميرا متوقفة");
-  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if ("speechSynthesis" in window && !voiceConversationActive) window.speechSynthesis.cancel();
 }
 
 window.addEventListener("pagehide", stopCamera);

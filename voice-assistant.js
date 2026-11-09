@@ -17,6 +17,7 @@ let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
 let speechFallback = null;
+let speechOutputUnlocked = false;
 let recognitionRetryDelay = 800;
 let recognitionNetworkFailures = 0;
 let inputMode = "speech";
@@ -177,7 +178,9 @@ function startAudioRecorder() {
         }
       }
     }, 100);
-    status.textContent = "أستمع لك؛ تحدث، وسأجيب بعد انتهائك.";
+    status.textContent = speechOutputUnlocked
+      ? "أستمع لك؛ تحدث، وسأجيبك بصوت."
+      : "المحادثة جاهزة. المس الشاشة مرة لتفعيل صوت بصير، ثم تحدث.";
   } catch (error) {
     console.error("Unable to start audio recording:", error);
     stopConversation("تعذّر بدء تسجيل الصوت. تحقق من إذن الميكروفون ثم أعد تحميل الصفحة.");
@@ -195,6 +198,50 @@ function resumeAudioInputFromGesture() {
       }
     })
     .catch((error) => console.error("Unable to resume microphone audio processing:", error));
+}
+
+function resumeListeningAfterSpeech(currentAttempt) {
+  if (currentAttempt !== attempt || state !== "speaking") return;
+  updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
+  if (inputMode === "audio") {
+    void startAudioFallback();
+  } else {
+    createRecognition();
+    scheduleListening(300);
+  }
+}
+
+function unlockSpeechOutputFromGesture() {
+  if (speechOutputUnlocked || state !== "listening" || !("speechSynthesis" in window) ||
+      typeof window.SpeechSynthesisUtterance !== "function") return;
+
+  const currentAttempt = attempt;
+  releaseRecognition();
+  stopAudioInput();
+  window.speechSynthesis.cancel();
+  updateState("speaking", "بصير يرحب بك صوتيًا...");
+  speechFallback = new window.SpeechSynthesisUtterance(
+    "أهلًا، أنا بصير. خلنا نسولف! اسألني أي شيء، وسأجيبك بصوت."
+  );
+  speechFallback.lang = "ar-SA";
+  speechFallback.rate = 0.95;
+  const arabicVoice = window.speechSynthesis.getVoices()
+    .find((voice) => /^ar(-|$)/i.test(voice.lang));
+  if (arabicVoice) speechFallback.voice = arabicVoice;
+  speechFallback.onstart = () => {
+    speechOutputUnlocked = true;
+  };
+  speechFallback.onend = () => {
+    speechFallback = null;
+    resumeListeningAfterSpeech(currentAttempt);
+  };
+  speechFallback.onerror = (error) => {
+    console.error("Unable to unlock spoken replies:", error.error);
+    speechFallback = null;
+    resumeListeningAfterSpeech(currentAttempt);
+    status.textContent = "تعذّر تفعيل الصوت. تحقق من صوت الجهاز ثم المس الشاشة للمحاولة مجددًا.";
+  };
+  window.speechSynthesis.speak(speechFallback);
 }
 
 async function startAudioFallback() {
@@ -238,7 +285,16 @@ async function startAudioFallback() {
   }
 }
 
-document.addEventListener("pointerdown", resumeAudioInputFromGesture, { passive: true });
+function handleUserGesture() {
+  if (!speechOutputUnlocked) {
+    unlockSpeechOutputFromGesture();
+  }
+  resumeAudioInputFromGesture();
+}
+
+document.addEventListener("pointerdown", handleUserGesture, { passive: true });
+document.addEventListener("click", handleUserGesture);
+document.addEventListener("keydown", handleUserGesture);
 
 function stopConversation(message = "انتهت المحادثة الصوتية.") {
   attempt += 1;
@@ -468,7 +524,11 @@ function createRecognition() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
-    if (state === "listening") status.textContent = "تحدث الآن؛ سيجيب بصير بعد انتهاء كلامك.";
+    if (state === "listening") {
+      status.textContent = speechOutputUnlocked
+        ? "أستمع لك؛ تحدث، وسأجيبك بصوت."
+        : "المحادثة جاهزة. المس الشاشة مرة لتفعيل صوت بصير، ثم تحدث.";
+    }
   };
   recognition.onresult = (event) => {
     if (state !== "listening") return;
@@ -529,7 +589,7 @@ function startConversation() {
   inputMode = "speech";
   recognitionNetworkFailures = 0;
   transcript.textContent = "";
-  updateState("listening", "جارٍ تشغيل الميكروفون... اسمح بإذن الميكروفون عند الطلب.");
+  updateState("listening", "اسمح بالميكروفون، ثم المس الشاشة مرة لتفعيل رد بصير الصوتي.");
   window.dispatchEvent(new Event("baseer:conversation-start"));
   createRecognition();
   scheduleListening(300);
