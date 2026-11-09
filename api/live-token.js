@@ -79,11 +79,7 @@ module.exports = async function createLiveToken(request, response) {
       return sendJson(response, upstream.status === 429 ? 429 : 502, {
         error: upstream.status === 429
           ? "وصلت خدمة المحادثة الصوتية إلى حد الاستخدام الحالي. حاول لاحقًا."
-          : "تعذّر بدء جلسة الصوت المباشر. تحقق من إعدادات Gemini وحاول مجددًا.",
-        diagnostic: {
-          upstreamStatus: upstream.status,
-          message: providerMessage
-        }
+          : "تعذّر بدء جلسة الصوت المباشر. تحقق من إعدادات Gemini وحاول مجددًا."
       });
     }
     if (!result || typeof result.name !== "string" || !result.name.startsWith("auth_tokens/")) {
