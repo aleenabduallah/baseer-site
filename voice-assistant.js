@@ -3,7 +3,6 @@
 
 const status = document.getElementById("voice-chat-status");
 const transcript = document.getElementById("voice-chat-transcript");
-const toggle = document.getElementById("voice-chat-toggle");
 const audioPlayer = document.getElementById("voice-chat-audio");
 const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const MAX_HISTORY = 8;
@@ -20,9 +19,6 @@ let audioObjectUrl = null;
 function updateState(nextState, message) {
   state = nextState;
   status.textContent = message;
-  const active = nextState !== "idle";
-  toggle.setAttribute("aria-pressed", String(active));
-  toggle.textContent = active ? "إيقاف الاستماع" : "استئناف الاستماع";
 }
 
 function releaseRecognition() {
@@ -216,11 +212,6 @@ function startConversation() {
   createRecognition();
   scheduleListening(300);
 }
-
-toggle.addEventListener("click", () => {
-  if (state === "idle") startConversation();
-  else stopConversation("تم إيقاف الاستماع الصوتي.");
-});
 
 window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
 document.addEventListener("visibilitychange", () => {
