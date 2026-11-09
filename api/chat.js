@@ -222,7 +222,12 @@ module.exports = async function generateChatReply(request, response) {
     });
   } catch (error) {
     const timedOut = error && error.name === "AbortError";
-    console.error(timedOut ? "Gemini chat or speech request timed out." : "Gemini chat or speech request failed.");
+    const errorDetail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(
+      timedOut ? "Gemini chat or speech request timed out." : "Gemini chat or speech request failed.",
+      errorDetail,
+      error && error.cause && error.cause.code
+    );
     return sendJson(response, timedOut ? 504 : 502, {
       error: timedOut
         ? "استغرق تجهيز الرد الصوتي وقتًا طويلًا. تحقق من الاتصال وحاول مرة أخرى."
