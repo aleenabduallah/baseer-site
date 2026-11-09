@@ -114,6 +114,7 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   audioPlayer.src = audioObjectUrl;
   audioPlayer.onended = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
+    audioPlayer.hidden = true;
     updateState("listening", "تحدث بعد سماع الرد؛ قد يتوقف عند نفاد الحصة المجانية.");
     scheduleListening();
   };
@@ -122,12 +123,13 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
     console.error("Unable to play Gemini speech audio.");
     stopConversation("تعذّر تشغيل الرد الصوتي. حاول مجددًا.");
   };
-  updateState("speaking", "بصير يرد عليك؛ إذا لم يبدأ الصوت تلقائيًا استخدم مشغل الصوت.");
+  updateState("speaking", "بصير يرد عليك.");
   try {
     await audioPlayer.play();
   } catch (error) {
     if (currentAttempt !== attempt) return;
     console.error("Unable to autoplay Gemini speech audio:", error);
+    audioPlayer.hidden = false;
     updateState("speaking", "الرد جاهز. استخدم مشغل الصوت لسماعه.");
     audioPlayer.focus();
   }
