@@ -16,6 +16,7 @@ let restartTimer = null;
 let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
+let speechFallback = null;
 let recognitionRetryDelay = 800;
 let recognitionNetworkFailures = 0;
 let inputMode = "speech";
@@ -248,6 +249,10 @@ function stopConversation(message = "انتهت المحادثة الصوتية.
   releaseRecognition();
   stopAudioInput();
   audioPlayer.pause();
+  if (speechFallback && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+    speechFallback = null;
+  }
   updateState("idle", message);
   window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
@@ -277,10 +282,10 @@ function scheduleListening(delay = 450) {
 
 async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   if (currentAttempt !== attempt) return;
-  transcript.textContent = `أنت: ${userText}\nبصير: ${reply}`;
+  transcript.textContent = "";
 
   if (typeof audio !== "string" || !audio) {
-    stopConversation("وصل الرد مكتوبًا، لكن لم يصل الملف الصوتي. حاول مجددًا.");
+    stopConversation("تعذّر تجهيز الرد الصوتي. حاول مرة أخرى.");
     return;
   }
 
@@ -293,26 +298,60 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   }
   audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
   audioPlayer.src = audioObjectUrl;
-  audioPlayer.onended = () => {
+  let fallbackStarted = false;
+  const resumeListeningAfterReply = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
     audioPlayer.hidden = true;
     updateState("listening", "تحدث بعد سماع الرد؛ قد يتوقف عند نفاد الحصة المجانية.");
     scheduleListening();
   };
+  const useSpeechFallback = (error) => {
+    if (fallbackStarted || currentAttempt !== attempt || state !== "speaking") return;
+    fallbackStarted = true;
+    audioPlayer.pause();
+    audioPlayer.onerror = null;
+
+    if ("speechSynthesis" in window && typeof window.SpeechSynthesisUtterance === "function") {
+      console.warn("Falling back to browser speech for the spoken reply.", error);
+      audioPlayer.hidden = true;
+      speechFallback = new window.SpeechSynthesisUtterance(reply);
+      speechFallback.lang = "ar-SA";
+      speechFallback.rate = 0.95;
+      speechFallback.onend = () => {
+        speechFallback = null;
+        resumeListeningAfterReply();
+      };
+      speechFallback.onerror = (speechError) => {
+        console.error("Browser speech fallback failed:", speechError.error);
+        speechFallback = null;
+        showAudioPlayerFallback();
+      };
+      window.speechSynthesis.speak(speechFallback);
+      return;
+    }
+
+    showAudioPlayerFallback();
+  };
+  function showAudioPlayerFallback() {
+    if (currentAttempt !== attempt || state !== "speaking") return;
+    audioPlayer.hidden = false;
+    updateState("speaking", "الرد جاهز صوتيًا. استخدم مشغل الصوت لسماعه.");
+    audioPlayer.focus();
+  }
+
+  audioPlayer.onended = () => {
+    resumeListeningAfterReply();
+  };
   audioPlayer.onerror = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
-    console.error("Unable to play Gemini speech audio.");
-    stopConversation("تعذّر تشغيل الرد الصوتي. حاول مجددًا.");
+    useSpeechFallback("Audio playback failed.");
   };
   updateState("speaking", "بصير يرد عليك.");
   try {
     await audioPlayer.play();
   } catch (error) {
     if (currentAttempt !== attempt) return;
-    console.error("Unable to autoplay Gemini speech audio:", error);
-    audioPlayer.hidden = false;
-    updateState("speaking", "الرد جاهز. استخدم مشغل الصوت لسماعه.");
-    audioPlayer.focus();
+    useSpeechFallback(error);
   }
 }
 
@@ -372,7 +411,6 @@ async function sendTurn(userText, audioInput = null) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (typeof result.text === "string") transcript.textContent = `أنت: ${userText}\nبصير: ${result.text}`;
       const error = new Error(result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.");
       error.status = response.status;
       throw error;
