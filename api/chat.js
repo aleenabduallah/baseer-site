@@ -89,7 +89,9 @@ module.exports = async function generateChatReply(request, response) {
   const audio = body && body.audio;
   if (audio !== undefined) {
     if (!audio || typeof audio.data !== "string" ||
+        audio.data.length < 128 ||
         audio.data.length > MAX_AUDIO_LENGTH ||
+        audio.data.length % 4 !== 0 ||
         !/^[A-Za-z0-9+/]+={0,2}$/.test(audio.data) ||
         !ALLOWED_AUDIO_TYPES.has(audio.mimeType)) {
       return sendJson(response, 400, { error: "التسجيل الصوتي غير صالح." });
