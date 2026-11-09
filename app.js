@@ -226,6 +226,7 @@ function startListening() {
 
 window.addEventListener("baseer:conversation-start", () => {
   voiceConversationActive = true;
+  startCamera();
   if (recognitionRestartTimer) window.clearTimeout(recognitionRestartTimer);
   recognitionRestartTimer = null;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();

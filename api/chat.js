@@ -4,7 +4,8 @@ const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 const GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. لا تدّعِ أنك ترى محيط المستخدم أو الكاميرا؛ إن سأل عما أمامه، وضّح أن وصف الكاميرا ميزة منفصلة. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
+const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. إذا أُرسلت صورة مع آخر رسالة، صف ما يظهر فيها بدقة واذكر الأشياء ومواقعها النسبية، ولا تخمّن التفاصيل غير الواضحة. إذا لم تُرسل صورة، فلا تدّعِ أنك ترى محيط المستخدم واطلب منه تفعيل الكاميرا. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
+const MAX_IMAGE_LENGTH = 1400000;
 
 function sendJson(response, status, body) {
   response.status(status).setHeader("Content-Type", "application/json; charset=utf-8");
@@ -66,6 +67,15 @@ module.exports = async function generateChatReply(request, response) {
   const contents = parseMessages(body && body.messages);
   if (!contents) {
     return sendJson(response, 400, { error: "رسالة المحادثة غير صالحة." });
+  }
+  const image = body && body.image;
+  if (image !== undefined) {
+    if (typeof image !== "string" || image.length > MAX_IMAGE_LENGTH || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) {
+      return sendJson(response, 400, { error: "صورة الكاميرا غير صالحة." });
+    }
+    contents[contents.length - 1].parts.push({
+      inlineData: { mimeType: "image/jpeg", data: image }
+    });
   }
 
   const controller = new AbortController();

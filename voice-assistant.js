@@ -4,6 +4,7 @@
 const status = document.getElementById("voice-chat-status");
 const transcript = document.getElementById("voice-chat-transcript");
 const audioPlayer = document.getElementById("voice-chat-audio");
+const camera = document.getElementById("camera");
 const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const MAX_HISTORY = 8;
 
@@ -15,6 +16,27 @@ let restartTimer = null;
 let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
+
+async function captureCameraFrame() {
+  if (!camera) return null;
+  const cameraStatus = document.getElementById("camera-status");
+  const deadline = Date.now() + (cameraStatus && cameraStatus.textContent.includes("جارٍ تجهيز المساعدة") ? 4000 : 0);
+  while (camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+  }
+  if (camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+      !camera.videoWidth || !camera.videoHeight) return null;
+
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 768 / Math.max(camera.videoWidth, camera.videoHeight));
+  canvas.width = Math.round(camera.videoWidth * scale);
+  canvas.height = Math.round(camera.videoHeight * scale);
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  context.drawImage(camera, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+}
 
 function updateState(nextState, message) {
   state = nextState;
@@ -122,11 +144,15 @@ async function sendMessage(text) {
   requestController = new AbortController();
 
   try {
+    const image = await captureCameraFrame();
     const response = await fetch(new URL("./api/chat", document.baseURI), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ messages: [...messages, { role: "user", text: trimmedText }].slice(-MAX_HISTORY) }),
+      body: JSON.stringify({
+        messages: [...messages, { role: "user", text: trimmedText }].slice(-MAX_HISTORY),
+        ...(image ? { image } : {})
+      }),
       signal: requestController.signal
     });
     const result = await response.json().catch(() => ({}));
