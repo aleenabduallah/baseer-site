@@ -17,6 +17,8 @@ let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
 let speechFallback = null;
+let speechPlaybackContext = null;
+let speechSource = null;
 let speechOutputUnlocked = false;
 let recognitionRetryDelay = 800;
 let recognitionNetworkFailures = 0;
@@ -112,6 +114,24 @@ function stopAudioInput() {
   }
 }
 
+function stopSpeechOutput() {
+  if (speechSource) {
+    speechSource.onended = null;
+    try {
+      speechSource.stop();
+    } catch (error) {
+      if (error.name !== "InvalidStateError") {
+        console.error("Unable to stop spoken reply:", error);
+      }
+    }
+    speechSource = null;
+  }
+  if (speechFallback && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+    speechFallback = null;
+  }
+}
+
 function finishAudioRecording() {
   if (recorder && recorder.state === "recording") recorder.stop();
 }
@@ -202,6 +222,7 @@ function resumeAudioInputFromGesture() {
 
 function resumeListeningAfterSpeech(currentAttempt) {
   if (currentAttempt !== attempt || state !== "speaking") return;
+  speechSource = null;
   updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
   if (inputMode === "audio") {
     void startAudioFallback();
@@ -212,35 +233,68 @@ function resumeListeningAfterSpeech(currentAttempt) {
 }
 
 function unlockSpeechOutputFromGesture() {
-  if (speechOutputUnlocked || state !== "listening" || !("speechSynthesis" in window) ||
-      typeof window.SpeechSynthesisUtterance !== "function") return;
+  if (speechOutputUnlocked || state !== "listening") return;
 
   const currentAttempt = attempt;
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (AudioContextConstructor && !speechPlaybackContext) {
+    try {
+      speechPlaybackContext = new AudioContextConstructor();
+    } catch (error) {
+      console.error("Unable to prepare spoken audio output:", error);
+    }
+  }
+  if (speechPlaybackContext && speechPlaybackContext.state !== "running") {
+    speechPlaybackContext.resume().then(() => {
+      if (speechPlaybackContext && speechPlaybackContext.state === "running") {
+        const silentBuffer = speechPlaybackContext.createBuffer(1, 1, speechPlaybackContext.sampleRate);
+        const silentSource = speechPlaybackContext.createBufferSource();
+        silentSource.buffer = silentBuffer;
+        silentSource.connect(speechPlaybackContext.destination);
+        silentSource.start();
+      }
+    }).catch((error) => console.error("Unable to activate spoken audio output:", error));
+  }
+  speechOutputUnlocked = true;
+  if (!("speechSynthesis" in window) || typeof window.SpeechSynthesisUtterance !== "function") {
+    if (!speechPlaybackContext) {
+      status.textContent = "تعذّر تفعيل الصوت في هذا المتصفح.";
+      return;
+    }
+    status.textContent = "تم تفعيل الصوت. اسألني، وسأجيبك بصوت.";
+    return;
+  }
+
   releaseRecognition();
   stopAudioInput();
   window.speechSynthesis.cancel();
   updateState("speaking", "بصير يرحب بك صوتيًا...");
-  speechFallback = new window.SpeechSynthesisUtterance(
-    "أهلًا، أنا بصير. خلنا نسولف! اسألني أي شيء، وسأجيبك بصوت."
-  );
+  speakLocally("أهلًا، أنا بصير. خلنا نسولف! اسألني أي شيء، وسأجيبك بصوت.", currentAttempt);
+}
+
+function speakLocally(text, currentAttempt) {
+  if (currentAttempt !== attempt || !("speechSynthesis" in window) ||
+      typeof window.SpeechSynthesisUtterance !== "function") {
+    stopConversation("لا يتوفر نطق صوتي في هذا المتصفح.");
+    return;
+  }
+  speechFallback = new window.SpeechSynthesisUtterance(text);
   speechFallback.lang = "ar-SA";
   speechFallback.rate = 0.95;
   const arabicVoice = window.speechSynthesis.getVoices()
     .find((voice) => /^ar(-|$)/i.test(voice.lang));
   if (arabicVoice) speechFallback.voice = arabicVoice;
-  speechFallback.onstart = () => {
-    speechOutputUnlocked = true;
-  };
   speechFallback.onend = () => {
     speechFallback = null;
     resumeListeningAfterSpeech(currentAttempt);
   };
   speechFallback.onerror = (error) => {
-    console.error("Unable to unlock spoken replies:", error.error);
+    console.error("Browser speech synthesis failed:", error.error);
     speechFallback = null;
     resumeListeningAfterSpeech(currentAttempt);
-    status.textContent = "تعذّر تفعيل الصوت. تحقق من صوت الجهاز ثم المس الشاشة للمحاولة مجددًا.";
+    status.textContent = "تعذّر تشغيل الصوت من الجهاز. تحقق من الصوت وأصوات العربية في إعدادات النطق.";
   };
+  window.speechSynthesis.resume();
   window.speechSynthesis.speak(speechFallback);
 }
 
@@ -305,10 +359,7 @@ function stopConversation(message = "انتهت المحادثة الصوتية.
   releaseRecognition();
   stopAudioInput();
   audioPlayer.pause();
-  if (speechFallback && "speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-    speechFallback = null;
-  }
+  stopSpeechOutput();
   updateState("idle", message);
   document.documentElement.classList.remove("voice-conversation-active");
   window.dispatchEvent(new Event("baseer:conversation-stop"));
@@ -345,8 +396,9 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   let hasAudioSource = false;
   const resumeListeningAfterReply = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
+    speechSource = null;
     audioPlayer.hidden = true;
-    updateState("listening", "تحدث بعد سماع الرد؛ قد يتوقف عند نفاد الحصة المجانية.");
+    updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
     scheduleListening();
   };
   const useSpeechFallback = (error) => {
@@ -358,19 +410,7 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
     if ("speechSynthesis" in window && typeof window.SpeechSynthesisUtterance === "function") {
       console.warn("Falling back to browser speech for the spoken reply.", error);
       audioPlayer.hidden = true;
-      speechFallback = new window.SpeechSynthesisUtterance(reply);
-      speechFallback.lang = "ar-SA";
-      speechFallback.rate = 0.95;
-      speechFallback.onend = () => {
-        speechFallback = null;
-        resumeListeningAfterReply();
-      };
-      speechFallback.onerror = (speechError) => {
-        console.error("Browser speech fallback failed:", speechError.error);
-        speechFallback = null;
-        showAudioPlayerFallback();
-      };
-      window.speechSynthesis.speak(speechFallback);
+      speakLocally(reply, currentAttempt);
       return;
     }
 
@@ -404,11 +444,23 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
       bytes[index] = binary.charCodeAt(index);
     }
     audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
-    audioPlayer.src = audioObjectUrl;
-    hasAudioSource = true;
-    audioPlayer.onended = resumeListeningAfterReply;
-    audioPlayer.onerror = () => useSpeechFallback("Audio playback failed.");
-    await audioPlayer.play();
+    if (speechPlaybackContext) {
+      const buffer = await speechPlaybackContext.decodeAudioData(bytes.buffer.slice(0));
+      if (currentAttempt !== attempt || state !== "speaking") return;
+      const source = speechPlaybackContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(speechPlaybackContext.destination);
+      source.onended = resumeListeningAfterReply;
+      speechSource = source;
+      hasAudioSource = true;
+      source.start();
+    } else {
+      audioPlayer.src = audioObjectUrl;
+      hasAudioSource = true;
+      audioPlayer.onended = resumeListeningAfterReply;
+      audioPlayer.onerror = () => useSpeechFallback("Audio playback failed.");
+      await audioPlayer.play();
+    }
   } catch (error) {
     if (currentAttempt !== attempt) return;
     useSpeechFallback(error);
