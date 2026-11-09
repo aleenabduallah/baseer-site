@@ -310,6 +310,7 @@ function stopConversation(message = "انتهت المحادثة الصوتية.
     speechFallback = null;
   }
   updateState("idle", message);
+  document.documentElement.classList.remove("voice-conversation-active");
   window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
 
@@ -588,6 +589,7 @@ function startConversation() {
   messages = [];
   inputMode = "speech";
   recognitionNetworkFailures = 0;
+  document.documentElement.classList.add("voice-conversation-active");
   transcript.textContent = "";
   updateState("listening", "اسمح بالميكروفون، ثم المس الشاشة مرة لتفعيل رد بصير الصوتي.");
   window.dispatchEvent(new Event("baseer:conversation-start"));
