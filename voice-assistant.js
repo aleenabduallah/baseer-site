@@ -7,6 +7,9 @@ const camera = document.getElementById("camera");
 const TARGET_AUDIO_RATE = 16000;
 const OUTPUT_AUDIO_RATE = 24000;
 const CAMERA_FRAME_INTERVAL = 1000;
+const LIVE_TOKEN_ENDPOINT = location.hostname === "aleenabduallah.github.io"
+  ? "https://baseer-site-steel.vercel.app/api/live-token"
+  : new URL("./api/live-token", document.baseURI);
 
 let state = "idle";
 let attempt = 0;
@@ -358,7 +361,7 @@ function connectLiveSocket(token, model, config, resumptionHandle, currentAttemp
 
 async function createLiveToken(currentAttempt) {
   tokenController = new AbortController();
-  const response = await fetch(new URL("./api/live-token", document.baseURI), {
+  const response = await fetch(LIVE_TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",

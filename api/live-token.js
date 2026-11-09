@@ -14,6 +14,7 @@ const LIVE_CONFIG = {
   contextWindowCompression: { slidingWindow: {} }
 };
 const SYSTEM_INSTRUCTION_CONTENT = { parts: [{ text: SYSTEM_INSTRUCTION }] };
+const ALLOWED_CROSS_ORIGINS = new Set(["https://aleenabduallah.github.io"]);
 
 function sendJson(response, status, body) {
   response.status(status).setHeader("Content-Type", "application/json; charset=utf-8");
@@ -21,27 +22,41 @@ function sendJson(response, status, body) {
   return response.json(body);
 }
 
-function isSameOrigin(request) {
+function getAllowedOrigin(request) {
   const origin = request.headers.origin;
   const host = request.headers["x-forwarded-host"] || request.headers.host;
   const protocol = (request.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
-  if (!origin || !host || (protocol !== "https" && protocol !== "http")) return false;
+  if (!origin || (protocol !== "https" && protocol !== "http")) return null;
 
   try {
     const parsedOrigin = new URL(origin);
-    return parsedOrigin.host === host && parsedOrigin.protocol === `${protocol}:`;
+    if (parsedOrigin.protocol !== "https:") return null;
+    if (host && parsedOrigin.host === host && parsedOrigin.protocol === `${protocol}:`) return origin;
+    return ALLOWED_CROSS_ORIGINS.has(origin) ? origin : null;
   } catch (error) {
-    return false;
+    return null;
   }
 }
 
 module.exports = async function createLiveToken(request, response) {
   response.setHeader("Cache-Control", "no-store");
+  const allowedOrigin = getAllowedOrigin(request);
+  if (allowedOrigin) {
+    response.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    response.setHeader("Access-Control-Max-Age", "600");
+    response.setHeader("Vary", "Origin");
+  }
+  if (request.method === "OPTIONS") {
+    if (!allowedOrigin) return sendJson(response, 403, { error: "رُفض طلب بدء المحادثة." });
+    return response.status(204).end();
+  }
   if (request.method !== "POST") {
     response.setHeader("Allow", "POST");
     return sendJson(response, 405, { error: "طريقة الطلب غير مدعومة." });
   }
-  if (!isSameOrigin(request)) {
+  if (!allowedOrigin) {
     return sendJson(response, 403, { error: "رُفض طلب بدء المحادثة." });
   }
   if (!process.env.GEMINI_API_KEY) {
