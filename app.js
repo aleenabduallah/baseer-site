@@ -104,6 +104,7 @@ let recognition = null;
 let recognitionRestartTimer = null;
 let cameraStarting = false;
 let cameraPermissionBlocked = false;
+let voiceConversationActive = false;
 let speaking = false;
 let recognitionActive = false;
 let recognitionAvailable = Boolean(SpeechRecognition);
@@ -124,6 +125,7 @@ function setStatus(message, state) {
 }
 
 function speak(text) {
+  if (voiceConversationActive) return;
   if (!("speechSynthesis" in window)) {
     setDescription("المتصفح لا يدعم النطق الصوتي. جرّب متصفحًا حديثًا يدعم تحويل النص إلى كلام.");
     return;
@@ -210,7 +212,7 @@ function handleVoiceCommand(transcript) {
 }
 
 function startListening() {
-  if (!recognition || speaking || document.hidden) return;
+  if (!recognition || speaking || voiceConversationActive || document.hidden) return;
   try {
     recognition.start();
   } catch (error) {
@@ -221,6 +223,20 @@ function startListening() {
     }
   }
 }
+
+window.addEventListener("baseer:conversation-start", () => {
+  voiceConversationActive = true;
+  if (recognitionRestartTimer) window.clearTimeout(recognitionRestartTimer);
+  recognitionRestartTimer = null;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  speaking = false;
+  if (recognition) recognition.stop();
+});
+
+window.addEventListener("baseer:conversation-stop", () => {
+  voiceConversationActive = false;
+  startListening();
+});
 
 function initializeVoiceCommands() {
   if (!recognitionAvailable) {
@@ -264,7 +280,7 @@ function initializeVoiceCommands() {
   };
   recognition.onend = () => {
     recognitionActive = false;
-    if (recognitionAvailable && !speaking && !document.hidden) {
+    if (recognitionAvailable && !speaking && !voiceConversationActive && !document.hidden) {
       window.clearTimeout(recognitionRestartTimer);
       recognitionRestartTimer = window.setTimeout(() => {
         recognitionRestartTimer = null;
@@ -554,10 +570,8 @@ document.addEventListener("visibilitychange", () => {
 });
 initializeVoiceCommands();
 
-if (!recognitionAvailable) {
-  speak("جارٍ تشغيل الكاميرا.");
-  startCamera();
-}
+if (!recognitionAvailable) speak("جارٍ تشغيل الكاميرا.");
+startCamera();
 
 stage.addEventListener("pointerup", () => {
   if (recognitionAvailable && recognition) {

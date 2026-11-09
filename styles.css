@@ -108,6 +108,9 @@ body { min-height: 100vh; min-height: 100dvh; background: #102b32; color: var(--
 }
 .voice-status { margin: 0; color: var(--green); font-size: .9rem; font-weight: 600; }
 .description-text { max-width: 620px; margin: 0; color: white; font-size: clamp(1.05rem, 4vw, 1.35rem); font-weight: 500; line-height: 1.6; }
+.voice-chat-status { margin: 0; color: #c9dad4; font-size: .82rem; }
+.voice-chat-transcript { max-height: 4.8em; overflow-y: auto; margin: 0; color: white; font-size: .9rem; line-height: 1.6; }
+#voice-chat-audio { display: none; }
 .safety-note { margin: 1px 0 0; color: #c0cfca; font-size: .74rem; }
 .voice-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .live-badge { display: inline-flex; align-items: center; gap: 6px; color: #c9dad4; font-size: .78rem; }
