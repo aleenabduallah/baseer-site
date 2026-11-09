@@ -2,7 +2,7 @@
 
 const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. لا تدّعِ أنك ترى محيط المستخدم أو الكاميرا؛ إن سأل عما أمامه، وضّح أن وصف الكاميرا ميزة منفصلة. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
 
 function sendJson(response, status, body) {
