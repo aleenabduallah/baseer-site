@@ -269,6 +269,7 @@ function connectLiveSocket(token, model, config, resumptionHandle, currentAttemp
     );
     endpoint.searchParams.set("access_token", token);
     const socket = new WebSocket(endpoint.toString());
+    socket.binaryType = "arraybuffer";
     liveSocket = socket;
     sessionReady = false;
     let setupComplete = false;
@@ -284,10 +285,18 @@ function connectLiveSocket(token, model, config, resumptionHandle, currentAttemp
       if (resumptionHandle) setup.sessionResumption = { handle: resumptionHandle };
       socket.send(JSON.stringify({ setup: { model, ...setup } }));
     };
-    socket.onmessage = (event) => {
+    socket.onmessage = async (event) => {
       let message;
       try {
-        message = JSON.parse(event.data);
+        const data = typeof event.data === "string"
+          ? event.data
+          : event.data instanceof ArrayBuffer
+            ? new TextDecoder().decode(event.data)
+            : event.data instanceof Blob
+              ? await event.data.text()
+              : "";
+        if (!data) throw new Error("Gemini Live returned an unsupported message type");
+        message = JSON.parse(data);
       } catch (error) {
         console.error("Unable to parse Gemini Live response:", error);
         stopConversation("وصل رد غير صالح من خدمة المحادثة. أعد تحميل الصفحة للمحاولة.");
