@@ -125,7 +125,10 @@ function setStatus(message, state) {
 }
 
 function speak(text) {
-  if (voiceConversationActive) return;
+  if (voiceConversationActive) {
+    window.dispatchEvent(new CustomEvent("baseer:announce", { detail: { text } }));
+    return;
+  }
   if (!("speechSynthesis" in window)) {
     setDescription("المتصفح لا يدعم النطق الصوتي. جرّب متصفحًا حديثًا يدعم تحويل النص إلى كلام.");
     return;
@@ -366,6 +369,39 @@ function describePredictions(predictions, forceAnnouncement = false) {
   if (descriptions.length === 1) return `أرى ${descriptions[0]}.`;
   return `أرى ${descriptions.slice(0, -1).join("، ")} و${descriptions[descriptions.length - 1]}.`;
 }
+
+window.addEventListener("baseer:describe-camera", async (event) => {
+  const resolve = event.detail && event.detail.resolve;
+  if (typeof resolve !== "function") return;
+  const deadline = Date.now() + 5000;
+  while ((!model || !stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || loading) &&
+      stream && Date.now() < deadline) {
+    await new Promise((finish) => window.setTimeout(finish, 200));
+  }
+  if (!model || !stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || loading) {
+    resolve("");
+    return;
+  }
+
+  loading = true;
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const predictions = await model.detect(video, 20, 0.08, 0.55);
+      const description = describePredictions(predictions);
+      if (description) {
+        resolve(description);
+        return;
+      }
+      if (attempt < 2) await new Promise((finish) => window.setTimeout(finish, 250));
+    }
+    resolve("");
+  } catch (error) {
+    console.error("Local camera description failed:", error);
+    resolve("");
+  } finally {
+    loading = false;
+  }
+});
 
 async function detectObjects(forceAnnouncement = false) {
   if (loading) {

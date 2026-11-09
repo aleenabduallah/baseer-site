@@ -20,6 +20,7 @@ let speechFallback = null;
 let speechPlaybackContext = null;
 let speechSource = null;
 let speechOutputUnlocked = false;
+let pendingAnnouncement = "";
 let recognitionRetryDelay = 800;
 let recognitionNetworkFailures = 0;
 let inputMode = "speech";
@@ -222,6 +223,13 @@ function resumeAudioInputFromGesture() {
 
 function resumeListeningAfterSpeech(currentAttempt) {
   if (currentAttempt !== attempt || state !== "speaking") return;
+  if (pendingAnnouncement) {
+    const announcement = pendingAnnouncement;
+    pendingAnnouncement = "";
+    updateState("speaking", "بصير يرد عليك.");
+    speakLocally(announcement, currentAttempt);
+    return;
+  }
   speechSource = null;
   updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
   if (inputMode === "audio") {
@@ -297,6 +305,81 @@ function speakLocally(text, currentAttempt) {
   window.speechSynthesis.resume();
   window.speechSynthesis.speak(speechFallback);
 }
+
+function announceLocally(text) {
+  if (typeof text !== "string" || !text.trim() || state === "idle") return;
+  if (!speechOutputUnlocked || state !== "listening") {
+    pendingAnnouncement = text.trim();
+    return;
+  }
+  const currentAttempt = attempt;
+  if (inputMode === "speech" && recognition) recognition.stop();
+  if (inputMode === "audio") stopAudioInput();
+  updateState("speaking", "بصير يرد عليك.");
+  speakLocally(text.trim(), currentAttempt);
+}
+
+function describeCameraLocally() {
+  return new Promise((resolve) => {
+    let settled = false;
+    let readinessCheck = null;
+    const finish = (description) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (readinessCheck) window.clearInterval(readinessCheck);
+      resolve(typeof description === "string" ? description : "");
+    };
+    const timeout = window.setTimeout(() => finish(""), 6000);
+    const deadline = Date.now() + 5500;
+    const requestDescription = () => {
+      if (settled || camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      if (readinessCheck) window.clearInterval(readinessCheck);
+      window.dispatchEvent(new CustomEvent("baseer:describe-camera", {
+        detail: { resolve: finish }
+      }));
+    };
+    readinessCheck = window.setInterval(() => {
+      if (Date.now() >= deadline) {
+        finish("");
+        return;
+      }
+      requestDescription();
+    }, 250);
+    requestDescription();
+  });
+}
+
+function isCameraQuestion(text) {
+  const question = text
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ى/g, "ي");
+  return /قدامي|امامي|امامك|اشوف|تشوف|ترى|شايف|شوف|الكاميرا|الصوره|الصورة|وش في|ماذا ترى|ما الذي اراه/.test(question);
+}
+
+async function speakServiceUnavailable(userText, error, currentAttempt, audioInput) {
+  if (currentAttempt !== attempt || (state !== "listening" && state !== "thinking")) return;
+  let reply;
+  if (error && error.status === 429 && (isCameraQuestion(userText) || audioInput)) {
+    const cameraDescription = await describeCameraLocally();
+    reply = cameraDescription
+      ? `خدمة المحادثة ممتلئة مؤقتًا، لكن أرى محليًا: ${cameraDescription}`
+      : "خدمة المحادثة ممتلئة مؤقتًا، والكاميرا غير جاهزة لوصف ما أمامك. تأكد من إذن الكاميرا ثم حاول لاحقًا.";
+  } else if (error && error.status === 429) {
+    reply = "وصلت إلى حد الاستخدام المجاني للمساعد مؤقتًا. أقدر أرجع أسولف معك عندما تتجدد الحصة.";
+  } else {
+    reply = "ما قدرت أتصل بالمساعد الآن. تحقق من الإنترنت وحاول مرة ثانية.";
+  }
+  if (currentAttempt !== attempt || (state !== "listening" && state !== "thinking")) return;
+  updateState("speaking", "بصير يرد عليك.");
+  speakLocally(reply, currentAttempt);
+}
+
+window.addEventListener("baseer:announce", (event) => {
+  announceLocally(event.detail && event.detail.text);
+});
 
 async function startAudioFallback() {
   inputMode = "audio";
@@ -550,7 +633,7 @@ async function sendTurn(userText, audioInput = null) {
     if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
     console.error("Unable to get a Gemini response:", error);
     if (error && (error.status === 429 || error.status >= 500)) {
-      stopConversation(error.message);
+      await speakServiceUnavailable(userText, error, currentAttempt, audioInput);
       return;
     }
     updateState("listening", error && error.message ? error.message : "تعذّر الحصول على رد. حاول مرة أخرى.");
@@ -643,6 +726,10 @@ function startConversation() {
   recognitionNetworkFailures = 0;
   document.documentElement.classList.add("voice-conversation-active");
   transcript.textContent = "";
+  const cameraDescription = document.getElementById("description");
+  if (cameraDescription && /إذن الكاميرا|الكاميرا لا تتيح|لم يتم تحميل نموذج التعرّف/.test(cameraDescription.textContent)) {
+    pendingAnnouncement = cameraDescription.textContent;
+  }
   updateState("listening", "اسمح بالميكروفون، ثم المس الشاشة مرة لتفعيل رد بصير الصوتي.");
   window.dispatchEvent(new Event("baseer:conversation-start"));
   createRecognition();
