@@ -86,20 +86,20 @@ module.exports = async function generateChatReply(request, response) {
       inlineData: { mimeType: "image/jpeg", data: image }
     });
   }
-  const audio = body && body.audio;
-  if (audio !== undefined) {
-    if (!audio || typeof audio.data !== "string" ||
-        audio.data.length < 128 ||
-        audio.data.length > MAX_AUDIO_LENGTH ||
-        audio.data.length % 4 !== 0 ||
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(audio.data) ||
-        !ALLOWED_AUDIO_TYPES.has(audio.mimeType)) {
+  const audioInput = body && body.audio;
+  if (audioInput !== undefined) {
+    if (!audioInput || typeof audioInput.data !== "string" ||
+        audioInput.data.length < 128 ||
+        audioInput.data.length > MAX_AUDIO_LENGTH ||
+        audioInput.data.length % 4 !== 0 ||
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(audioInput.data) ||
+        !ALLOWED_AUDIO_TYPES.has(audioInput.mimeType)) {
       return sendJson(response, 400, { error: "التسجيل الصوتي غير صالح." });
     }
     contents[contents.length - 1].parts[0].text =
       "اكتب في الحقل heard تفريغًا دقيقًا لكلام المستخدم في التسجيل الصوتي المرفق. ثم اكتب في الحقل reply جوابًا طبيعيًا ومناسبًا لمواصلة حديثكما مستفيدًا من سياق المحادثة. إذا سأل عما أمامه، استخدم لقطة الكاميرا المرفقة لوصف الأشياء الظاهرة.";
     contents[contents.length - 1].parts.push({
-      inlineData: { mimeType: audio.mimeType, data: audio.data }
+      inlineData: { mimeType: audioInput.mimeType, data: audioInput.data }
     });
   }
 
@@ -116,7 +116,7 @@ module.exports = async function generateChatReply(request, response) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
         contents,
-        generationConfig: audio
+        generationConfig: audioInput
           ? {
             maxOutputTokens: 240,
             temperature: 0.6,
@@ -152,7 +152,7 @@ module.exports = async function generateChatReply(request, response) {
         .trim()
       : "";
     let heard = "";
-    if (audio && text) {
+    if (audioInput && text) {
       try {
         const conversationTurn = JSON.parse(text);
         heard = typeof conversationTurn.heard === "string" ? conversationTurn.heard.trim() : "";
@@ -216,7 +216,7 @@ module.exports = async function generateChatReply(request, response) {
 
     return sendJson(response, 200, {
       text,
-      ...(audio ? { heard } : {}),
+      ...(audioInput ? { heard } : {}),
       audio: audio.data,
       audioMimeType: typeof audio.mime_type === "string" ? audio.mime_type : "audio/wav"
     });
