@@ -14,7 +14,6 @@ const LIVE_TOKEN_ENDPOINT = location.hostname === "aleenabduallah.github.io"
 let state = "idle";
 let attempt = 0;
 let resumeAfterVisibility = false;
-let audioUnlocked = false;
 let tokenController = null;
 let liveSocket = null;
 let sessionReady = false;
@@ -129,7 +128,7 @@ function initializeAudioInput(stream, currentAttempt) {
   audioProcessor.connect(silentGain);
   silentGain.connect(audioContext.destination);
 
-  if (audioUnlocked) resumeAudioContext();
+  resumeAudioContext();
 }
 
 function resumeAudioContext() {
@@ -144,7 +143,6 @@ function resumeAudioContext() {
 }
 
 function handleUserGesture() {
-  audioUnlocked = true;
   resumeAudioContext();
 }
 
@@ -169,6 +167,7 @@ function decodePcm(data) {
 
 function playAudioChunk(data, currentAttempt) {
   if (!audioContext || currentAttempt !== attempt) return;
+  resumeAudioContext();
   const samples = decodePcm(data);
   if (!samples.length) return;
 
@@ -479,9 +478,9 @@ async function startConversation() {
     if (currentAttempt !== attempt) return;
 
     startCameraFrames();
-    updateState("listening", audioUnlocked
-      ? "أستمع لك؛ قاطعني متى ما بغيت."
-      : "لمّس الشاشة لتفعيل الصوت، ثم تكلم مع بصير.");
+    updateState("listening", audioContext.state === "running"
+      ? "أستمع لك؛ تحدث مباشرة، وسأرد عليك."
+      : "أستمع لك تلقائيًا. إذا لم تسمع ردي، المس الشاشة مرة لتفعيل الصوت.");
     const greetingAccepted = sendRealtimeInput({
       text: "ابدأ بتحية قصيرة وودودة باللهجة السعودية، وقل للمستخدم إنك جاهز للمحادثة."
     });
