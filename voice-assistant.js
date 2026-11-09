@@ -284,21 +284,8 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   if (currentAttempt !== attempt) return;
   transcript.textContent = "";
 
-  if (typeof audio !== "string" || !audio) {
-    stopConversation("تعذّر تجهيز الرد الصوتي. حاول مرة أخرى.");
-    return;
-  }
-
-  audioPlayer.pause();
-  if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
-  const binary = atob(audio);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
-  audioPlayer.src = audioObjectUrl;
   let fallbackStarted = false;
+  let hasAudioSource = false;
   const resumeListeningAfterReply = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
     audioPlayer.hidden = true;
@@ -330,24 +317,40 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
       return;
     }
 
-    showAudioPlayerFallback();
+    console.error("No supported speech output is available.");
+    stopConversation("تعذّر تشغيل الرد صوتيًا. حاول مرة أخرى.");
   };
   function showAudioPlayerFallback() {
     if (currentAttempt !== attempt || state !== "speaking") return;
+    if (!hasAudioSource) {
+      console.error("No playable generated audio is available.");
+      stopConversation("تعذّر تشغيل الرد صوتيًا. حاول مرة أخرى.");
+      return;
+    }
     audioPlayer.hidden = false;
     updateState("speaking", "الرد جاهز صوتيًا. استخدم مشغل الصوت لسماعه.");
     audioPlayer.focus();
   }
 
-  audioPlayer.onended = () => {
-    resumeListeningAfterReply();
-  };
-  audioPlayer.onerror = () => {
-    if (currentAttempt !== attempt || state !== "speaking") return;
-    useSpeechFallback("Audio playback failed.");
-  };
   updateState("speaking", "بصير يرد عليك.");
+  if (typeof audio !== "string" || !audio) {
+    useSpeechFallback("Generated speech audio was unavailable.");
+    return;
+  }
+
   try {
+    audioPlayer.pause();
+    if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
+    const binary = atob(audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
+    audioPlayer.src = audioObjectUrl;
+    hasAudioSource = true;
+    audioPlayer.onended = resumeListeningAfterReply;
+    audioPlayer.onerror = () => useSpeechFallback("Audio playback failed.");
     await audioPlayer.play();
   } catch (error) {
     if (currentAttempt !== attempt) return;
@@ -411,9 +414,19 @@ async function sendTurn(userText, audioInput = null) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.");
-      error.status = response.status;
-      throw error;
+      const errorMessage = result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.";
+      if (typeof result.text !== "string" || !result.text.trim()) {
+        const error = new Error(errorMessage);
+        error.status = response.status;
+        throw error;
+      }
+      if (audioInput && typeof result.heard === "string" && result.heard.trim()) {
+        heardText = result.heard.trim();
+      }
+      const reply = result.text.trim();
+      messages = [...messages, { role: "user", text: heardText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
+      await speakReply(heardText, reply, result.audio, result.audioMimeType, currentAttempt);
+      return;
     }
     if (currentAttempt !== attempt) return;
 

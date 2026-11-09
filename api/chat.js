@@ -122,6 +122,7 @@ module.exports = async function generateChatReply(request, response) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 50000);
   let text = "";
+  let heard = "";
   try {
     const upstream = await fetch(GEMINI_URL, {
       method: "POST",
@@ -167,7 +168,6 @@ module.exports = async function generateChatReply(request, response) {
         .join("")
         .trim()
       : "";
-    let heard = "";
     if (audioInput && text) {
       const conversationTurn = parseConversationTurn(text);
       if (conversationTurn) {
@@ -217,7 +217,11 @@ module.exports = async function generateChatReply(request, response) {
       const error = speechResponse.status === 429
         ? "وصلت إلى حد الاستخدام المجاني للصوت. انتظر قليلًا ثم حاول مجددًا."
         : "تعذّر إنشاء الرد الصوتي. حاول مجددًا بعد قليل.";
-      return sendJson(response, speechResponse.status === 429 ? 429 : 502, { error, text });
+      return sendJson(response, speechResponse.status === 429 ? 429 : 502, {
+        error,
+        text,
+        ...(audioInput ? { heard } : {})
+      });
     }
 
     const audio = speechResult && Array.isArray(speechResult.steps)
@@ -227,7 +231,11 @@ module.exports = async function generateChatReply(request, response) {
       : null;
     if (!audio || !audio.data || audio.data.length > 4000000) {
       console.error("Gemini speech response did not contain valid audio.");
-      return sendJson(response, 502, { error: "وصل الرد مكتوبًا، لكن تعذّر تجهيز صوته. حاول مجددًا.", text });
+      return sendJson(response, 502, {
+        error: "تعذّر تجهيز الصوت المولّد. سيحاول المتصفح نطق الرد.",
+        text,
+        ...(audioInput ? { heard } : {})
+      });
     }
 
     return sendJson(response, 200, {
@@ -248,7 +256,8 @@ module.exports = async function generateChatReply(request, response) {
       error: timedOut
         ? "استغرق تجهيز الرد الصوتي وقتًا طويلًا. تحقق من الاتصال وحاول مرة أخرى."
         : "تعذّر الاتصال بخدمة Gemini. تحقق من الإنترنت وحاول مرة أخرى.",
-      ...(text ? { text } : {})
+      ...(text ? { text } : {}),
+      ...(audioInput && heard ? { heard } : {})
     });
   } finally {
     clearTimeout(timeout);
