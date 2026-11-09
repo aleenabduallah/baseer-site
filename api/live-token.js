@@ -74,11 +74,18 @@ module.exports = async function createLiveToken(request, response) {
     });
     const result = await upstream.json().catch(() => null);
     if (!upstream.ok) {
-      console.error("Gemini Live token request failed:", upstream.status);
+      const providerMessage = result && result.error && typeof result.error.message === "string"
+        ? result.error.message.replace(process.env.GEMINI_API_KEY, "[redacted]").slice(0, 400)
+        : "";
+      console.error("Gemini Live token request failed:", upstream.status, providerMessage);
       return sendJson(response, upstream.status === 429 ? 429 : 502, {
         error: upstream.status === 429
           ? "وصلت خدمة المحادثة الصوتية إلى حد الاستخدام الحالي. حاول لاحقًا."
-          : "تعذّر بدء جلسة الصوت المباشر. تحقق من إعدادات Gemini وحاول مجددًا."
+          : "تعذّر بدء جلسة الصوت المباشر. تحقق من إعدادات Gemini وحاول مجددًا.",
+        diagnostic: {
+          upstreamStatus: upstream.status,
+          message: providerMessage
+        }
       });
     }
     if (!result || typeof result.name !== "string" || !result.name.startsWith("auth_tokens/")) {
