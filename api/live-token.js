@@ -3,8 +3,7 @@
 const LIVE_MODEL = "models/gemini-3.8-live";
 const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود يتحدث مع المستخدم بشكل طبيعي ومستمر باللهجة السعودية متى كان ذلك مناسبًا. افهم كلامه وأجب عنه مباشرة بصوت عربي واضح، وتابع سياق الحديث ولا تكتفِ بتحويل كلامه إلى نص. تستطيع رؤية إطارات الكاميرا التي تصلك أثناء المحادثة؛ لا تصف ما فيها إلا إذا سأل المستخدم عما أمامه أو طلب وصفًا بصريًا. عند الوصف، كن موجزًا ودقيقًا ولا تخمّن التفاصيل أو المسافات، ونبّه إلى المخاطر الواضحة دون أن تستبدل وسائل التنقل الآمنة. ابدأ بتحية عربية قصيرة وودودة، ثم واصل الحوار بطبيعية.";
 const LIVE_CONFIG = {
-  responseModalities: ["AUDIO"],
-  systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+  generationConfig: { responseModalities: ["AUDIO"] },
   inputAudioTranscription: { languageCodes: ["ar-SA"] },
   outputAudioTranscription: {},
   realtimeInputConfig: {
@@ -14,10 +13,7 @@ const LIVE_CONFIG = {
   sessionResumption: {},
   contextWindowCompression: { slidingWindow: {} }
 };
-const LIVE_CONSTRAINED_CONFIG = {
-  responseModalities: LIVE_CONFIG.responseModalities,
-  systemInstruction: LIVE_CONFIG.systemInstruction
-};
+const SYSTEM_INSTRUCTION_CONTENT = { parts: [{ text: SYSTEM_INSTRUCTION }] };
 
 function sendJson(response, status, body) {
   response.status(status).setHeader("Content-Type", "application/json; charset=utf-8");
@@ -65,10 +61,12 @@ module.exports = async function createLiveToken(request, response) {
         uses: 1,
         expireTime: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         newSessionExpireTime: new Date(Date.now() + 60 * 1000).toISOString(),
-        liveConnectConstraints: {
+        bidiGenerateContentSetup: {
           model: LIVE_MODEL,
-          config: LIVE_CONSTRAINED_CONFIG
-        }
+          systemInstruction: SYSTEM_INSTRUCTION_CONTENT,
+          ...LIVE_CONFIG
+        },
+        fieldMask: "model,systemInstruction,generationConfig.responseModalities"
       }),
       signal: controller.signal
     });
