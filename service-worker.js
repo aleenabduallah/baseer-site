@@ -1,12 +1,12 @@
 "use strict";
 
-const CACHE_NAME = "baseer-shell-v8";
+const CACHE_NAME = "baseer-shell-v9";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
-  "./voice-assistant.js?v=gemini-arabic-audio-v2",
+  "./voice-assistant.js?v=gemini-arabic-audio-v3",
   "./manifest.webmanifest",
   "./app-icon.svg"
 ];

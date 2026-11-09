@@ -22,7 +22,7 @@ function updateState(nextState, message) {
   status.textContent = message;
   const active = nextState !== "idle";
   toggle.setAttribute("aria-pressed", String(active));
-  toggle.textContent = active ? "إيقاف المحادثة الصوتية" : "ابدأ المحادثة الصوتية";
+  toggle.textContent = active ? "إيقاف الاستماع" : "استئناف الاستماع";
 }
 
 function releaseRecognition() {
@@ -219,7 +219,7 @@ function startConversation() {
 
 toggle.addEventListener("click", () => {
   if (state === "idle") startConversation();
-  else stopConversation("تم إيقاف المحادثة الصوتية.");
+  else stopConversation("تم إيقاف الاستماع الصوتي.");
 });
 
 window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
@@ -233,5 +233,5 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-updateState("idle", "اضغط «ابدأ المحادثة الصوتية» ثم تحدث؛ سيقرأ بصير إجابته بصوت عربي.");
+startConversation();
 })();
