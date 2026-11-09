@@ -53,18 +53,19 @@
         <p id="voice-status" class="voice-status" role="status" aria-live="polite">جارٍ تفعيل الاستماع الصوتي...</p>
         <span class="live-badge"><span></span> محادثة مجانية محدودة</span>
       </div>
+      <button id="voice-chat-toggle" class="voice-chat-toggle" type="button" aria-pressed="false">ابدأ المحادثة الصوتية</button>
       <p id="description" class="description-text" role="status" aria-live="polite" aria-atomic="true">جارٍ تجهيز الكاميرا والمساعد الصوتي...</p>
-      <p id="voice-chat-status" class="voice-chat-status" role="status" aria-live="polite">جارٍ بدء المساعد الصوتي المجاني. اسمح باستخدام الميكروفون عند الطلب.</p>
+      <p id="voice-chat-status" class="voice-chat-status" role="status" aria-live="polite">اضغط «ابدأ المحادثة الصوتية» ثم تحدث؛ سيقرأ بصير إجابته بصوت عربي.</p>
       <p id="voice-chat-transcript" class="voice-chat-transcript" aria-live="polite"></p>
+      <audio id="voice-chat-audio" controls playsinline preload="none" aria-label="تشغيل رد بصير الصوتي"></audio>
       <p class="safety-note">مساعد تجريبي؛ لا يغني عن العصا البيضاء أو وسائل التنقّل الآمنة.</p>
-      <p class="privacy-note">قد يعالج المتصفح الصوت للتعرّف عليه، ثم يُرسل النص إلى Gemini؛ وقد تُستخدم بيانات الحصة المجانية لتحسين خدمات Google.</p>
+      <p class="privacy-note">يتعرّف المتصفح على كلامك ويرسله كنص إلى Gemini، ثم يحوّل Gemini الرد إلى صوت. قد تُستخدم بيانات الحصة المجانية لتحسين خدمات Google.</p>
     </footer>
   </main>
 
-  <audio id="voice-chat-audio" autoplay playsinline></audio>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" defer></script>
   <script src="app.js" defer></script>
-  <script src="voice-assistant.js?v=free-gemini-v1" defer></script>
+  <script src="voice-assistant.js?v=gemini-arabic-audio-v2" defer></script>
 </body>
 </html>

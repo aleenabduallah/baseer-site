@@ -3,6 +3,7 @@
 const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
+const GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. لا تدّعِ أنك ترى محيط المستخدم أو الكاميرا؛ إن سأل عما أمامه، وضّح أن وصف الكاميرا ميزة منفصلة. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
 
 function sendJson(response, status, body) {
@@ -69,6 +70,7 @@ module.exports = async function generateChatReply(request, response) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
+  let text = "";
   try {
     const upstream = await fetch(GEMINI_URL, {
       method: "POST",
@@ -92,7 +94,7 @@ module.exports = async function generateChatReply(request, response) {
       return sendJson(response, upstream.status === 429 ? 429 : 502, { error: message });
     }
 
-    const text = result && result.candidates && result.candidates[0] &&
+    text = result && result.candidates && result.candidates[0] &&
       result.candidates[0].content && Array.isArray(result.candidates[0].content.parts)
       ? result.candidates[0].content.parts
         .map((part) => typeof part.text === "string" ? part.text : "")
@@ -104,14 +106,62 @@ module.exports = async function generateChatReply(request, response) {
       return sendJson(response, 502, { error: "وصل رد فارغ من Gemini. أعد صياغة السؤال وحاول مرة أخرى." });
     }
 
-    return sendJson(response, 200, { text });
+    const speechResponse = await fetch(GEMINI_TTS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": process.env.GEMINI_API_KEY
+      },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash-tts",
+        input: [{
+          type: "user_input",
+          content: [{
+            type: "text",
+            text,
+            annotations: [{
+              type: "speech_metadata",
+              style: "Speak clearly in Arabic, at a calm, natural pace."
+            }]
+          }]
+        }],
+        response_format: { type: "audio" },
+        generation_config: { speech_config: [{ voice: "Kore" }] }
+      }),
+      signal: controller.signal
+    });
+    const speechResult = await speechResponse.json().catch(() => null);
+    if (!speechResponse.ok) {
+      console.error("Gemini speech request failed:", speechResponse.status);
+      const error = speechResponse.status === 429
+        ? "وصلت إلى حد الاستخدام المجاني للصوت. انتظر قليلًا ثم حاول مجددًا."
+        : "تعذّر إنشاء الرد الصوتي. حاول مجددًا بعد قليل.";
+      return sendJson(response, speechResponse.status === 429 ? 429 : 502, { error, text });
+    }
+
+    const audio = speechResult && Array.isArray(speechResult.steps)
+      ? speechResult.steps
+        .flatMap((step) => Array.isArray(step.content) ? step.content : [])
+        .find((part) => part.type === "audio" && typeof part.data === "string")
+      : null;
+    if (!audio || !audio.data || audio.data.length > 4000000) {
+      console.error("Gemini speech response did not contain valid audio.");
+      return sendJson(response, 502, { error: "وصل الرد مكتوبًا، لكن تعذّر تجهيز صوته. حاول مجددًا.", text });
+    }
+
+    return sendJson(response, 200, {
+      text,
+      audio: audio.data,
+      audioMimeType: typeof audio.mime_type === "string" ? audio.mime_type : "audio/wav"
+    });
   } catch (error) {
     const timedOut = error && error.name === "AbortError";
-    console.error(timedOut ? "Gemini chat request timed out." : "Gemini chat request failed.");
+    console.error(timedOut ? "Gemini chat or speech request timed out." : "Gemini chat or speech request failed.");
     return sendJson(response, timedOut ? 504 : 502, {
       error: timedOut
-        ? "استغرق تجهيز الرد وقتًا طويلًا. تحقق من الاتصال وحاول مرة أخرى."
-        : "تعذّر الاتصال بخدمة Gemini. تحقق من الإنترنت وحاول مرة أخرى."
+        ? "استغرق تجهيز الرد الصوتي وقتًا طويلًا. تحقق من الاتصال وحاول مرة أخرى."
+        : "تعذّر الاتصال بخدمة Gemini. تحقق من الإنترنت وحاول مرة أخرى.",
+      ...(text ? { text } : {})
     });
   } finally {
     clearTimeout(timeout);

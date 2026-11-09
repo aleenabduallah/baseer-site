@@ -3,6 +3,8 @@
 
 const status = document.getElementById("voice-chat-status");
 const transcript = document.getElementById("voice-chat-transcript");
+const toggle = document.getElementById("voice-chat-toggle");
+const audioPlayer = document.getElementById("voice-chat-audio");
 const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const MAX_HISTORY = 8;
 
@@ -13,11 +15,14 @@ let requestController = null;
 let restartTimer = null;
 let attempt = 0;
 let resumeAfterVisibility = false;
-let retryOnInteraction = false;
+let audioObjectUrl = null;
 
 function updateState(nextState, message) {
   state = nextState;
   status.textContent = message;
+  const active = nextState !== "idle";
+  toggle.setAttribute("aria-pressed", String(active));
+  toggle.textContent = active ? "إيقاف المحادثة الصوتية" : "ابدأ المحادثة الصوتية";
 }
 
 function releaseRecognition() {
@@ -48,7 +53,7 @@ function stopConversation(message = "انتهت المحادثة الصوتية.
     requestController = null;
   }
   releaseRecognition();
-  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  audioPlayer.pause();
   updateState("idle", message);
   window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
@@ -67,39 +72,47 @@ function scheduleListening(delay = 450) {
       }
       console.error("Unable to start browser speech recognition:", error);
       stopConversation("تعذّر تشغيل الاستماع الصوتي. المس الشاشة وحاول مرة أخرى.");
-      retryOnInteraction = true;
     }
   }, delay);
 }
 
-function speakReply(userText, reply, currentAttempt) {
+async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   if (currentAttempt !== attempt) return;
   transcript.textContent = `أنت: ${userText}\nبصير: ${reply}`;
 
-  if (!("speechSynthesis" in window)) {
-    updateState("idle", "ظهر الرد كتابةً، لكن هذا المتصفح لا يدعم النطق الصوتي.");
-    window.dispatchEvent(new Event("baseer:conversation-stop"));
-    retryOnInteraction = true;
+  if (typeof audio !== "string" || !audio) {
+    stopConversation("وصل الرد مكتوبًا، لكن لم يصل الملف الصوتي. حاول مجددًا.");
     return;
   }
 
-  updateState("speaking", "بصير يرد عليك...");
-  const utterance = new SpeechSynthesisUtterance(reply);
-  utterance.lang = "ar-SA";
-  utterance.rate = 0.96;
-  utterance.onend = () => {
+  audioPlayer.pause();
+  if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
+  const binary = atob(audio);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
+  audioPlayer.src = audioObjectUrl;
+  audioPlayer.onended = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
     updateState("listening", "تحدث بعد سماع الرد؛ قد يتوقف عند نفاد الحصة المجانية.");
     scheduleListening();
   };
-  utterance.onerror = (error) => {
+  audioPlayer.onerror = () => {
     if (currentAttempt !== attempt || state !== "speaking") return;
-    console.error("Unable to speak Gemini response:", error.error);
-    updateState("listening", "تعذّر نطق الرد. يمكنك قراءة النص ثم متابعة الحديث.");
-    scheduleListening();
+    console.error("Unable to play Gemini speech audio.");
+    stopConversation("تعذّر تشغيل الرد الصوتي. حاول مجددًا.");
   };
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
+  updateState("speaking", "بصير يرد عليك؛ إذا لم يبدأ الصوت تلقائيًا استخدم مشغل الصوت.");
+  try {
+    await audioPlayer.play();
+  } catch (error) {
+    if (currentAttempt !== attempt) return;
+    console.error("Unable to autoplay Gemini speech audio:", error);
+    updateState("speaking", "الرد جاهز. استخدم مشغل الصوت لسماعه.");
+    audioPlayer.focus();
+  }
 }
 
 async function sendMessage(text) {
@@ -122,6 +135,7 @@ async function sendMessage(text) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (typeof result.text === "string") transcript.textContent = `أنت: ${trimmedText}\nبصير: ${result.text}`;
       const error = new Error(result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.");
       error.status = response.status;
       throw error;
@@ -131,13 +145,12 @@ async function sendMessage(text) {
     const reply = typeof result.text === "string" ? result.text.trim() : "";
     if (!reply) throw new Error("لم يصل رد نصي من Gemini. حاول مرة أخرى.");
     messages = [...messages, { role: "user", text: trimmedText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
-    speakReply(trimmedText, reply, currentAttempt);
+    await speakReply(trimmedText, reply, result.audio, result.audioMimeType, currentAttempt);
   } catch (error) {
     if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
     console.error("Unable to get a Gemini response:", error);
-    if (error && (error.status === 429 || error.status === 503)) {
+    if (error && (error.status === 429 || error.status >= 500)) {
       stopConversation(error.message);
-      retryOnInteraction = true;
       return;
     }
     updateState("listening", error && error.message ? error.message : "تعذّر الحصول على رد. حاول مرة أخرى.");
@@ -178,7 +191,6 @@ function createRecognition() {
           : "تعذّر التعرّف على كلامك. تحقق من الإنترنت وحاول مرة أخرى.";
     console.error("Browser speech recognition failed:", event.error);
     stopConversation(message);
-    retryOnInteraction = true;
   };
   recognition.onend = () => {
     if (state === "listening" && !document.hidden) scheduleListening();
@@ -189,7 +201,6 @@ function startConversation() {
   if (state !== "idle") return;
   if (!BrowserSpeechRecognition) {
     updateState("idle", "المحادثة الصوتية تحتاج Chrome أو Edge يدعم التعرّف على العربية.");
-    retryOnInteraction = false;
     return;
   }
   if (location.protocol !== "https:" && location.hostname !== "localhost") {
@@ -203,13 +214,13 @@ function startConversation() {
   updateState("listening", "جارٍ تشغيل الميكروفون... اسمح بإذن الميكروفون عند الطلب.");
   window.dispatchEvent(new Event("baseer:conversation-start"));
   createRecognition();
-  retryOnInteraction = false;
   scheduleListening(300);
 }
 
-document.addEventListener("pointerdown", () => {
-  if (retryOnInteraction && state === "idle") startConversation();
-}, true);
+toggle.addEventListener("click", () => {
+  if (state === "idle") startConversation();
+  else stopConversation("تم إيقاف المحادثة الصوتية.");
+});
 
 window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
 document.addEventListener("visibilitychange", () => {
@@ -222,5 +233,5 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-startConversation();
+updateState("idle", "اضغط «ابدأ المحادثة الصوتية» ثم تحدث؛ سيقرأ بصير إجابته بصوت عربي.");
 })();
