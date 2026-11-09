@@ -2,7 +2,7 @@
 
 const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
 const GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SYSTEM_INSTRUCTION = "أنت بصير، رفيق محادثة صوتي عربي ودود وطبيعي. تحدث مع المستخدم كصديق، وافهم سياق كلامكما السابق، وأجب عن موضوعه بدل الاكتفاء بوصف الكاميرا. اسأل سؤال متابعة عند ملاءمته، وتجنب تكرار التحية أو الوصف في كل دور. اجعل الرد واضحًا ومناسبًا للنطق. إذا سأل عما أمامه أو عن صورة الكاميرا، صف الأشياء الظاهرة باختصار ودقة، ولا تخمّن التفاصيل غير الواضحة. لا تقل إنك ترى شيئًا إذا لم تصلك صورة. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
 const MAX_IMAGE_LENGTH = 1400000;
