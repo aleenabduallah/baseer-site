@@ -52,6 +52,22 @@ function parseMessages(value) {
   return messages;
 }
 
+function parseConversationTurn(value) {
+  const text = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end < start) return null;
+
+  try {
+    const conversationTurn = JSON.parse(text.slice(start, end + 1));
+    return conversationTurn && typeof conversationTurn === "object" && !Array.isArray(conversationTurn)
+      ? conversationTurn
+      : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 module.exports = async function generateChatReply(request, response) {
   response.setHeader("Cache-Control", "no-store");
   if (request.method !== "POST") {
@@ -97,7 +113,7 @@ module.exports = async function generateChatReply(request, response) {
       return sendJson(response, 400, { error: "التسجيل الصوتي غير صالح." });
     }
     contents[contents.length - 1].parts[0].text =
-      "اكتب في الحقل heard تفريغًا دقيقًا لكلام المستخدم في التسجيل الصوتي المرفق. ثم اكتب في الحقل reply جوابًا طبيعيًا ومناسبًا لمواصلة حديثكما مستفيدًا من سياق المحادثة. إذا سأل عما أمامه، استخدم لقطة الكاميرا المرفقة لوصف الأشياء الظاهرة.";
+      "أعد كائن JSON فقط بمفتاحين: heard وهو تفريغ كلام المستخدم في التسجيل الصوتي المرفق بدقة، وreply وهو جواب طبيعي ومناسب لمواصلة حديثكما مع الاستفادة من السياق. إذا سأل عما أمامه، استخدم لقطة الكاميرا المرفقة لوصف الأشياء الظاهرة.";
     contents[contents.length - 1].parts.push({
       inlineData: { mimeType: audioInput.mimeType, data: audioInput.data }
     });
@@ -153,12 +169,12 @@ module.exports = async function generateChatReply(request, response) {
       : "";
     let heard = "";
     if (audioInput && text) {
-      try {
-        const conversationTurn = JSON.parse(text);
+      const conversationTurn = parseConversationTurn(text);
+      if (conversationTurn) {
         heard = typeof conversationTurn.heard === "string" ? conversationTurn.heard.trim() : "";
         text = typeof conversationTurn.reply === "string" ? conversationTurn.reply.trim() : "";
-      } catch (error) {
-        console.error("Gemini audio response did not contain valid conversation JSON.");
+      } else {
+        console.error("Gemini audio response did not contain a valid conversation object.");
         return sendJson(response, 502, { error: "تعذّر فهم التسجيل الصوتي. تحدث بوضوح وحاول مرة أخرى." });
       }
       if (!heard || !text) {
