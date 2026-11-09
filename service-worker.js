@@ -4,7 +4,7 @@ const CACHE_NAME = "baseer-shell-v13";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
+  "./styles.css?v=audio-player-hidden-v1",
   "./app.js",
   "./voice-assistant.js?v=gemini-vision-audio-v2",
   "./manifest.webmanifest",
