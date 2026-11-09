@@ -3,104 +3,59 @@
 
 const status = document.getElementById("voice-chat-status");
 const transcript = document.getElementById("voice-chat-transcript");
-const audioPlayer = document.getElementById("voice-chat-audio");
 const camera = document.getElementById("camera");
-const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const MAX_HISTORY = 8;
+const TARGET_AUDIO_RATE = 16000;
+const OUTPUT_AUDIO_RATE = 24000;
+const CAMERA_FRAME_INTERVAL = 1000;
 
-let recognition = null;
 let state = "idle";
-let messages = [];
-let requestController = null;
-let restartTimer = null;
 let attempt = 0;
 let resumeAfterVisibility = false;
-let audioObjectUrl = null;
-let speechFallback = null;
-let speechPlaybackContext = null;
-let speechSource = null;
-let speechOutputUnlocked = false;
-let pendingAnnouncement = "";
-let recognitionRetryDelay = 800;
-let recognitionNetworkFailures = 0;
-let inputMode = "speech";
+let audioUnlocked = false;
+let tokenController = null;
+let liveSocket = null;
+let sessionReady = false;
+let sessionHandle = null;
+let reconnectAttempts = 0;
 let microphoneStream = null;
 let audioContext = null;
-let audioAnalyser = null;
-let audioMonitor = null;
-let recorder = null;
-let recorderChunks = [];
-let speechStartedAt = 0;
-let silenceStartedAt = 0;
-
-async function captureCameraFrame() {
-  if (!camera) return null;
-  const cameraStatus = document.getElementById("camera-status");
-  const deadline = Date.now() + (cameraStatus && cameraStatus.textContent.includes("جارٍ تجهيز المساعدة") ? 4000 : 0);
-  while (camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA && Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 150));
-  }
-  if (camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-      !camera.videoWidth || !camera.videoHeight) return null;
-
-  const canvas = document.createElement("canvas");
-  const scale = Math.min(1, 768 / Math.max(camera.videoWidth, camera.videoHeight));
-  canvas.width = Math.round(camera.videoWidth * scale);
-  canvas.height = Math.round(camera.videoHeight * scale);
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-
-  context.drawImage(camera, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
-}
+let audioProcessor = null;
+let silentGain = null;
+let cameraTimer = null;
+let nextPlaybackTime = 0;
+const outputSources = new Set();
 
 function updateState(nextState, message) {
   state = nextState;
   status.textContent = message;
 }
 
-function releaseRecognition() {
-  if (restartTimer) {
-    window.clearTimeout(restartTimer);
-    restartTimer = null;
-  }
-  if (recognition) {
-    const currentRecognition = recognition;
-    recognition = null;
-    currentRecognition.onresult = null;
-    currentRecognition.onend = null;
-    currentRecognition.onerror = null;
+function stopPlayback() {
+  for (const source of outputSources) {
+    source.onended = null;
     try {
-      currentRecognition.stop();
+      source.stop();
     } catch (error) {
       if (error.name !== "InvalidStateError") {
-        console.error("Unable to stop browser speech recognition:", error);
+        console.error("Unable to stop live audio playback:", error);
       }
     }
+    source.disconnect();
   }
+  outputSources.clear();
+  nextPlaybackTime = audioContext ? audioContext.currentTime : 0;
 }
 
 function stopAudioInput() {
-  if (audioMonitor) {
-    window.clearInterval(audioMonitor);
-    audioMonitor = null;
+  if (audioProcessor) {
+    audioProcessor.onaudioprocess = null;
+    audioProcessor.disconnect();
+    audioProcessor = null;
   }
-  if (recorder) {
-    const currentRecorder = recorder;
-    recorder = null;
-    currentRecorder.ondataavailable = null;
-    currentRecorder.onstop = null;
-    if (currentRecorder.state !== "inactive") {
-      try {
-        currentRecorder.stop();
-      } catch (error) {
-        console.error("Unable to stop audio recording:", error);
-      }
-    }
+  if (silentGain) {
+    silentGain.disconnect();
+    silentGain = null;
   }
-  recorderChunks = [];
-  speechStartedAt = 0;
-  silenceStartedAt = 0;
   if (microphoneStream) {
     microphoneStream.getTracks().forEach((track) => track.stop());
     microphoneStream = null;
@@ -108,633 +63,440 @@ function stopAudioInput() {
   if (audioContext) {
     const currentContext = audioContext;
     audioContext = null;
-    audioAnalyser = null;
     void currentContext.close().catch((error) => {
-      console.error("Unable to close audio input:", error);
+      console.error("Unable to close live audio context:", error);
     });
   }
 }
 
-function stopSpeechOutput() {
-  if (speechSource) {
-    speechSource.onended = null;
-    try {
-      speechSource.stop();
-    } catch (error) {
-      if (error.name !== "InvalidStateError") {
-        console.error("Unable to stop spoken reply:", error);
-      }
-    }
-    speechSource = null;
-  }
-  if (speechFallback && "speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-    speechFallback = null;
-  }
+function sendRealtimeInput(message) {
+  if (!sessionReady || !liveSocket || liveSocket.readyState !== WebSocket.OPEN) return false;
+  liveSocket.send(JSON.stringify({ realtimeInput: message }));
+  return true;
 }
 
-function finishAudioRecording() {
-  if (recorder && recorder.state === "recording") recorder.stop();
-}
+function resampleToPcm16(samples, sourceRate) {
+  const outputLength = Math.floor(samples.length * TARGET_AUDIO_RATE / sourceRate);
+  if (!outputLength) return new Int16Array(0);
 
-function startAudioRecorder() {
-  if (state !== "listening" || document.hidden || inputMode !== "audio" ||
-      !microphoneStream || recorder) return;
-
-  try {
-    const mimeType = typeof MediaRecorder.isTypeSupported === "function"
-      ? ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
-        .find((type) => MediaRecorder.isTypeSupported(type))
-      : "";
-    recorder = mimeType
-      ? new MediaRecorder(microphoneStream, { mimeType })
-      : new MediaRecorder(microphoneStream);
-    recorderChunks = [];
-    speechStartedAt = 0;
-    silenceStartedAt = 0;
-    recorder.ondataavailable = (event) => {
-      if (speechStartedAt && event.data.size) recorderChunks.push(event.data);
-    };
-    recorder.onstop = () => {
-      const currentRecorder = recorder;
-      recorder = null;
-      const hasSpeech = speechStartedAt > 0;
-      const clip = new Blob(recorderChunks, {
-        type: currentRecorder && currentRecorder.mimeType ? currentRecorder.mimeType : "audio/mp4"
-      });
-      recorderChunks = [];
-      speechStartedAt = 0;
-      silenceStartedAt = 0;
-      if (hasSpeech && clip.size > 0 && state === "listening") {
-        void sendAudioMessage(clip);
-      } else if (state === "listening") {
-        scheduleListening(250);
-      }
-    };
-    recorder.start(250);
-    if (audioMonitor) window.clearInterval(audioMonitor);
-    audioMonitor = window.setInterval(() => {
-      if (state !== "listening" || !audioAnalyser || !recorder ||
-          recorder.state !== "recording") return;
-      const samples = new Uint8Array(audioAnalyser.fftSize);
-      audioAnalyser.getByteTimeDomainData(samples);
-      let total = 0;
-      for (const sample of samples) {
-        const amplitude = (sample - 128) / 128;
-        total += amplitude * amplitude;
-      }
-      const volume = Math.sqrt(total / samples.length);
-      const now = Date.now();
-      if (volume >= 0.025) {
-        if (!speechStartedAt) {
-          speechStartedAt = now;
-          recorderChunks = [];
-        }
-        silenceStartedAt = 0;
-      } else if (speechStartedAt) {
-        if (!silenceStartedAt) silenceStartedAt = now;
-        if ((now - silenceStartedAt >= 1500 && now - speechStartedAt >= 500) ||
-            now - speechStartedAt >= 12000) {
-          finishAudioRecording();
-        }
-      }
-    }, 100);
-    status.textContent = speechOutputUnlocked
-      ? "أستمع لك؛ تحدث، وسأجيبك بصوت."
-      : "المحادثة جاهزة. المس الشاشة مرة لتفعيل صوت بصير، ثم تحدث.";
-  } catch (error) {
-    console.error("Unable to start audio recording:", error);
-    stopConversation("تعذّر بدء تسجيل الصوت. تحقق من إذن الميكروفون ثم أعد تحميل الصفحة.");
+  const result = new Int16Array(outputLength);
+  const step = sourceRate / TARGET_AUDIO_RATE;
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourceIndex = index * step;
+    const lowerIndex = Math.floor(sourceIndex);
+    const upperIndex = Math.min(lowerIndex + 1, samples.length - 1);
+    const fraction = sourceIndex - lowerIndex;
+    const sample = samples[lowerIndex] * (1 - fraction) + samples[upperIndex] * fraction;
+    result[index] = Math.max(-1, Math.min(1, sample)) * (sample < 0 ? 32768 : 32767);
   }
+  return result;
 }
 
-function resumeAudioInputFromGesture() {
-  if (!audioContext || audioContext.state !== "suspended" || state !== "listening" ||
-      inputMode !== "audio") return;
+function pcmToBase64(pcm) {
+  const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function initializeAudioInput(stream, currentAttempt) {
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) throw new Error("AudioContext is unavailable");
+
+  audioContext = new AudioContextConstructor();
+  const source = audioContext.createMediaStreamSource(stream);
+  audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+  silentGain = audioContext.createGain();
+  silentGain.gain.value = 0;
+  audioProcessor.onaudioprocess = (event) => {
+    if (currentAttempt !== attempt || !sessionReady) return;
+    const pcm = resampleToPcm16(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
+    if (!pcm.length) return;
+    sendRealtimeInput({
+      audio: {
+        data: pcmToBase64(pcm),
+        mimeType: `audio/pcm;rate=${TARGET_AUDIO_RATE}`
+      }
+    });
+  };
+  source.connect(audioProcessor);
+  audioProcessor.connect(silentGain);
+  silentGain.connect(audioContext.destination);
+
+  if (audioUnlocked) resumeAudioContext();
+}
+
+function resumeAudioContext() {
+  if (!audioContext || audioContext.state === "running") return;
   audioContext.resume()
     .then(() => {
-      if (audioContext && audioContext.state === "running") {
-        status.textContent = "أستمع لك؛ تحدث، وسأجيب بعد انتهائك.";
-        startAudioRecorder();
+      if (audioContext && audioContext.state === "running" && state === "listening") {
+        status.textContent = "أستمع لك؛ قاطعني متى ما بغيت.";
       }
     })
-    .catch((error) => console.error("Unable to resume microphone audio processing:", error));
-}
-
-function resumeListeningAfterSpeech(currentAttempt) {
-  if (currentAttempt !== attempt || state !== "speaking") return;
-  if (pendingAnnouncement) {
-    const announcement = pendingAnnouncement;
-    pendingAnnouncement = "";
-    updateState("speaking", "بصير يرد عليك.");
-    speakLocally(announcement, currentAttempt);
-    return;
-  }
-  speechSource = null;
-  updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
-  if (inputMode === "audio") {
-    void startAudioFallback();
-  } else {
-    createRecognition();
-    scheduleListening(300);
-  }
-}
-
-function unlockSpeechOutputFromGesture() {
-  if (speechOutputUnlocked || state !== "listening") return;
-
-  const currentAttempt = attempt;
-  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-  if (AudioContextConstructor && !speechPlaybackContext) {
-    try {
-      speechPlaybackContext = new AudioContextConstructor();
-    } catch (error) {
-      console.error("Unable to prepare spoken audio output:", error);
-    }
-  }
-  if (speechPlaybackContext && speechPlaybackContext.state !== "running") {
-    speechPlaybackContext.resume().then(() => {
-      if (speechPlaybackContext && speechPlaybackContext.state === "running") {
-        const silentBuffer = speechPlaybackContext.createBuffer(1, 1, speechPlaybackContext.sampleRate);
-        const silentSource = speechPlaybackContext.createBufferSource();
-        silentSource.buffer = silentBuffer;
-        silentSource.connect(speechPlaybackContext.destination);
-        silentSource.start();
-      }
-    }).catch((error) => console.error("Unable to activate spoken audio output:", error));
-  }
-  speechOutputUnlocked = true;
-  if (!("speechSynthesis" in window) || typeof window.SpeechSynthesisUtterance !== "function") {
-    if (!speechPlaybackContext) {
-      status.textContent = "تعذّر تفعيل الصوت في هذا المتصفح.";
-      return;
-    }
-    status.textContent = "تم تفعيل الصوت. اسألني، وسأجيبك بصوت.";
-    return;
-  }
-
-  releaseRecognition();
-  stopAudioInput();
-  window.speechSynthesis.cancel();
-  updateState("speaking", "بصير يرحب بك صوتيًا...");
-  speakLocally("أهلًا، أنا بصير. خلنا نسولف! اسألني أي شيء، وسأجيبك بصوت.", currentAttempt);
-}
-
-function speakLocally(text, currentAttempt) {
-  if (currentAttempt !== attempt || !("speechSynthesis" in window) ||
-      typeof window.SpeechSynthesisUtterance !== "function") {
-    stopConversation("لا يتوفر نطق صوتي في هذا المتصفح.");
-    return;
-  }
-  speechFallback = new window.SpeechSynthesisUtterance(text);
-  speechFallback.lang = "ar-SA";
-  speechFallback.rate = 0.95;
-  const arabicVoice = window.speechSynthesis.getVoices()
-    .find((voice) => /^ar(-|$)/i.test(voice.lang));
-  if (arabicVoice) speechFallback.voice = arabicVoice;
-  speechFallback.onend = () => {
-    speechFallback = null;
-    resumeListeningAfterSpeech(currentAttempt);
-  };
-  speechFallback.onerror = (error) => {
-    console.error("Browser speech synthesis failed:", error.error);
-    speechFallback = null;
-    resumeListeningAfterSpeech(currentAttempt);
-    status.textContent = "تعذّر تشغيل الصوت من الجهاز. تحقق من الصوت وأصوات العربية في إعدادات النطق.";
-  };
-  window.speechSynthesis.resume();
-  window.speechSynthesis.speak(speechFallback);
-}
-
-function announceLocally(text) {
-  if (typeof text !== "string" || !text.trim() || state === "idle") return;
-  if (!speechOutputUnlocked || state !== "listening") {
-    pendingAnnouncement = text.trim();
-    return;
-  }
-  const currentAttempt = attempt;
-  if (inputMode === "speech" && recognition) recognition.stop();
-  if (inputMode === "audio") stopAudioInput();
-  updateState("speaking", "بصير يرد عليك.");
-  speakLocally(text.trim(), currentAttempt);
-}
-
-function describeCameraLocally() {
-  return new Promise((resolve) => {
-    let settled = false;
-    let readinessCheck = null;
-    const finish = (description) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      if (readinessCheck) window.clearInterval(readinessCheck);
-      resolve(typeof description === "string" ? description : "");
-    };
-    const timeout = window.setTimeout(() => finish(""), 6000);
-    const deadline = Date.now() + 5500;
-    const requestDescription = () => {
-      if (settled || camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-      if (readinessCheck) window.clearInterval(readinessCheck);
-      window.dispatchEvent(new CustomEvent("baseer:describe-camera", {
-        detail: { resolve: finish }
-      }));
-    };
-    readinessCheck = window.setInterval(() => {
-      if (Date.now() >= deadline) {
-        finish("");
-        return;
-      }
-      requestDescription();
-    }, 250);
-    requestDescription();
-  });
-}
-
-function isCameraQuestion(text) {
-  const question = text
-    .toLowerCase()
-    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
-    .replace(/[أإآ]/g, "ا")
-    .replace(/ى/g, "ي");
-  return /قدامي|امامي|امامك|اشوف|تشوف|ترى|شايف|شوف|الكاميرا|الصوره|الصورة|وش في|ماذا ترى|ما الذي اراه/.test(question);
-}
-
-async function speakServiceUnavailable(userText, error, currentAttempt, audioInput) {
-  if (currentAttempt !== attempt || (state !== "listening" && state !== "thinking")) return;
-  let reply;
-  if (error && error.status === 429 && (isCameraQuestion(userText) || audioInput)) {
-    const cameraDescription = await describeCameraLocally();
-    reply = cameraDescription
-      ? `خدمة المحادثة ممتلئة مؤقتًا، لكن أرى محليًا: ${cameraDescription}`
-      : "خدمة المحادثة ممتلئة مؤقتًا، والكاميرا غير جاهزة لوصف ما أمامك. تأكد من إذن الكاميرا ثم حاول لاحقًا.";
-  } else if (error && error.status === 429) {
-    reply = "وصلت إلى حد الاستخدام المجاني للمساعد مؤقتًا. أقدر أرجع أسولف معك عندما تتجدد الحصة.";
-  } else {
-    reply = "ما قدرت أتصل بالمساعد الآن. تحقق من الإنترنت وحاول مرة ثانية.";
-  }
-  if (currentAttempt !== attempt || (state !== "listening" && state !== "thinking")) return;
-  updateState("speaking", "بصير يرد عليك.");
-  speakLocally(reply, currentAttempt);
-}
-
-window.addEventListener("baseer:announce", (event) => {
-  announceLocally(event.detail && event.detail.text);
-});
-
-async function startAudioFallback() {
-  inputMode = "audio";
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia ||
-      typeof MediaRecorder === "undefined") {
-    stopConversation("هذا المتصفح لا يدعم تسجيل الصوت للمحادثة. جرّبي Safari محدثًا أو جهازًا آخر.");
-    return;
-  }
-  updateState("listening", "جارٍ تفعيل الميكروفون للمحادثة الصوتية...");
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false
-    });
-    if (state !== "listening" || document.hidden) {
-      stream.getTracks().forEach((track) => track.stop());
-      return;
-    }
-    microphoneStream = stream;
-    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextConstructor) throw new Error("AudioContext is unavailable");
-    audioContext = new AudioContextConstructor();
-    await audioContext.resume();
-    audioAnalyser = audioContext.createAnalyser();
-    audioAnalyser.fftSize = 512;
-    audioContext.createMediaStreamSource(microphoneStream).connect(audioAnalyser);
-    if (audioContext.state !== "running") {
-      status.textContent = "المتصفح يحتاج لمسة على الشاشة لتفعيل الاستماع؛ المس الشاشة مرة ثم تحدث.";
-      return;
-    }
-    startAudioRecorder();
-  } catch (error) {
-    console.error("Unable to initialize audio recording:", error);
-    const message = error && (error.name === "NotAllowedError" || error.name === "SecurityError")
-      ? "اسمحي للمتصفح باستخدام الميكروفون ثم أعيدي تحميل الصفحة."
-      : error && error.name === "NotFoundError"
-        ? "لم يتم العثور على ميكروفون متصل."
-        : "تعذّر تشغيل الميكروفون. تحققي من إعداداته وحاولي مرة أخرى.";
-    stopConversation(message);
-  }
+    .catch((error) => console.error("Unable to resume live audio:", error));
 }
 
 function handleUserGesture() {
-  if (!speechOutputUnlocked) {
-    unlockSpeechOutputFromGesture();
-  }
-  resumeAudioInputFromGesture();
+  audioUnlocked = true;
+  resumeAudioContext();
 }
 
-document.addEventListener("pointerdown", handleUserGesture, { passive: true });
-document.addEventListener("click", handleUserGesture);
-document.addEventListener("keydown", handleUserGesture);
+window.addEventListener("baseer:announce", (event) => {
+  const text = event.detail && event.detail.text;
+  if (typeof text === "string" && text.trim()) {
+    sendRealtimeInput({ text: `أبلغ المستخدم بهذه المعلومة المهمة بإيجاز وبصوتك: ${text.trim()}` });
+  }
+});
+
+function decodePcm(data) {
+  const binary = atob(data);
+  const samples = new Int16Array(binary.length / 2);
+  for (let index = 0; index < samples.length; index += 1) {
+    const byteIndex = index * 2;
+    let sample = binary.charCodeAt(byteIndex) | (binary.charCodeAt(byteIndex + 1) << 8);
+    if (sample >= 0x8000) sample -= 0x10000;
+    samples[index] = sample;
+  }
+  return samples;
+}
+
+function playAudioChunk(data, currentAttempt) {
+  if (!audioContext || currentAttempt !== attempt) return;
+  const samples = decodePcm(data);
+  if (!samples.length) return;
+
+  const buffer = audioContext.createBuffer(1, samples.length, OUTPUT_AUDIO_RATE);
+  const channel = buffer.getChannelData(0);
+  for (let index = 0; index < samples.length; index += 1) {
+    channel[index] = samples[index] / 32768;
+  }
+
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  source.onended = () => {
+    outputSources.delete(source);
+    source.disconnect();
+    if (!outputSources.size && state === "speaking") {
+      updateState("listening", "أستمع لك؛ قاطعني متى ما بغيت.");
+    }
+  };
+  const startAt = Math.max(audioContext.currentTime + 0.025, nextPlaybackTime);
+  nextPlaybackTime = startAt + buffer.duration;
+  outputSources.add(source);
+  source.start(startAt);
+  if (state !== "speaking") updateState("speaking", "بصير يتكلم؛ تقدر تقاطعه متى ما بغيت.");
+}
+
+function captureCameraFrame() {
+  if (!camera || camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+      !camera.videoWidth || !camera.videoHeight) return "";
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 640 / Math.max(camera.videoWidth, camera.videoHeight));
+  canvas.width = Math.round(camera.videoWidth * scale);
+  canvas.height = Math.round(camera.videoHeight * scale);
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  context.drawImage(camera, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.65).split(",")[1];
+}
+
+function sendCameraFrame() {
+  const frame = captureCameraFrame();
+  if (frame) {
+    sendRealtimeInput({
+      video: { data: frame, mimeType: "image/jpeg" }
+    });
+  }
+}
+
+function startCameraFrames() {
+  if (cameraTimer) window.clearInterval(cameraTimer);
+  sendCameraFrame();
+  cameraTimer = window.setInterval(sendCameraFrame, CAMERA_FRAME_INTERVAL);
+}
+
+function handleServerMessage(message, currentAttempt) {
+  if (currentAttempt !== attempt) return;
+  if (message.error) {
+    const detail = message.error.message || "Gemini Live returned an error";
+    console.error("Gemini Live session error:", detail);
+    stopConversation("تعذّر استمرار المحادثة الصوتية. تحقق من حصة Gemini والاتصال ثم أعد تحميل الصفحة.");
+    return;
+  }
+  if (message.sessionResumptionUpdate) {
+    const update = message.sessionResumptionUpdate;
+    if (update.resumable && typeof update.newHandle === "string") {
+      sessionHandle = update.newHandle;
+    }
+  }
+  if (message.goAway && liveSocket && liveSocket.readyState === WebSocket.OPEN) {
+    liveSocket.close(1000, "Reconnect live session");
+  }
+
+  const serverContent = message.serverContent;
+  if (!serverContent) return;
+  if (serverContent.interrupted) {
+    stopPlayback();
+    updateState("listening", "أسمعك؛ تفضل.");
+  }
+  if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
+    transcript.textContent = `أنت: ${serverContent.inputTranscription.text}`;
+  }
+  if (serverContent.outputTranscription && serverContent.outputTranscription.text) {
+    transcript.textContent += ` بصير: ${serverContent.outputTranscription.text}`;
+  }
+  if (serverContent.modelTurn && Array.isArray(serverContent.modelTurn.parts)) {
+    for (const part of serverContent.modelTurn.parts) {
+      if (part.inlineData && typeof part.inlineData.data === "string") {
+        playAudioChunk(part.inlineData.data, currentAttempt);
+      }
+    }
+  }
+  if (serverContent.turnComplete && !outputSources.size && state !== "idle") {
+    updateState("listening", "أستمع لك؛ قاطعني متى ما بغيت.");
+  }
+}
+
+function connectLiveSocket(token, model, config, resumptionHandle, currentAttempt) {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL(
+      "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
+    );
+    endpoint.searchParams.set("access_token", token);
+    const socket = new WebSocket(endpoint.toString());
+    liveSocket = socket;
+    sessionReady = false;
+    let setupComplete = false;
+    const setupTimeout = window.setTimeout(() => {
+      if (!setupComplete) {
+        socket.close();
+        reject(new Error("انتهت مهلة تهيئة جلسة الصوت."));
+      }
+    }, 15000);
+
+    socket.onopen = () => {
+      const setup = { ...config };
+      if (resumptionHandle) setup.sessionResumption = { handle: resumptionHandle };
+      socket.send(JSON.stringify({ setup: { model, ...setup } }));
+    };
+    socket.onmessage = (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (error) {
+        console.error("Unable to parse Gemini Live response:", error);
+        stopConversation("وصل رد غير صالح من خدمة المحادثة. أعد تحميل الصفحة للمحاولة.");
+        return;
+      }
+      if (message.setupComplete) {
+        setupComplete = true;
+        sessionReady = true;
+        window.clearTimeout(setupTimeout);
+        resolve();
+        return;
+      }
+      if (message.error && !setupComplete) {
+        window.clearTimeout(setupTimeout);
+        reject(new Error(message.error.message || "رفضت خدمة الصوت إعداد الجلسة."));
+        socket.close();
+        return;
+      }
+      handleServerMessage(message, currentAttempt);
+    };
+    socket.onerror = () => {
+      if (!setupComplete) {
+        window.clearTimeout(setupTimeout);
+        reject(new Error("تعذّر فتح اتصال الصوت المباشر."));
+      }
+    };
+    socket.onclose = (event) => {
+      window.clearTimeout(setupTimeout);
+      if (liveSocket !== socket || currentAttempt !== attempt || state === "idle") return;
+      sessionReady = false;
+      if (sessionHandle && reconnectAttempts < 2) {
+        stopPlayback();
+        reconnectAttempts += 1;
+        updateState("connecting", "أعيد وصل المحادثة مع الاحتفاظ بسياقها...");
+        window.setTimeout(() => {
+          if (currentAttempt !== attempt || state === "idle") return;
+          connectLiveSocket(token, model, config, sessionHandle, currentAttempt)
+            .then(() => {
+              if (currentAttempt === attempt) {
+                updateState("listening", "رجع الاتصال؛ أستمع لك.");
+              }
+            })
+            .catch((error) => {
+              if (currentAttempt === attempt) {
+                console.error("Unable to resume Gemini Live session:", error, event.code);
+                stopConversation("انقطع الاتصال بالمحادثة. أعد تحميل الصفحة للبدء من جديد.");
+              }
+            });
+        }, 500);
+      } else {
+        console.error("Gemini Live connection closed:", event.code, event.reason);
+        stopConversation(event.code === 1008
+          ? "رفضت خدمة Gemini جلسة الصوت. تحقق من تفعيل نموذج Live والحصة المتاحة."
+          : "انقطع اتصال المحادثة الصوتية. تحقق من الإنترنت وحاول مجددًا.");
+      }
+    };
+  });
+}
+
+async function createLiveToken(currentAttempt) {
+  tokenController = new AbortController();
+  const response = await fetch(new URL("./api/live-token", document.baseURI), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: "{}",
+    signal: tokenController.signal
+  });
+  const result = await response.json().catch(() => ({}));
+  if (currentAttempt !== attempt) throw new DOMException("Conversation was stopped", "AbortError");
+  if (!response.ok) {
+    const error = new Error(result.error || "تعذّر بدء جلسة الصوت المباشر.");
+    error.status = response.status;
+    throw error;
+  }
+  if (typeof result.token !== "string" || typeof result.model !== "string" ||
+      !result.config || typeof result.config !== "object") {
+    throw new Error("وصل إعداد غير صالح من خادم المحادثة.");
+  }
+  return result;
+}
+
+function microphoneErrorMessage(error) {
+  if (error && (error.name === "NotAllowedError" || error.name === "SecurityError")) {
+    return "اسمح باستخدام الميكروفون من إعدادات المتصفح ثم أعد تحميل الصفحة.";
+  }
+  if (error && error.name === "NotFoundError") return "لم يتم العثور على ميكروفون متصل.";
+  if (error && error.name === "NotReadableError") return "الميكروفون مستخدم من تطبيق آخر. أغلقه وحاول مجددًا.";
+  return "تعذّر تشغيل الميكروفون. تحقق من إذنه وإعدادات الجهاز.";
+}
+
+function liveErrorMessage(error) {
+  if (error && error.name === "AbortError") return "";
+  if (error && error.status === 429) {
+    return "وصلت خدمة المحادثة الصوتية إلى حد الاستخدام الحالي. حاول لاحقًا.";
+  }
+  if (error && error.status === 503) return error.message;
+  if (error && error.status >= 500) return error.message;
+  if (error && error.name === "NotAllowedError") return microphoneErrorMessage(error);
+  if (error && error.name === "NotFoundError") return microphoneErrorMessage(error);
+  if (error && error.name === "NotReadableError") return microphoneErrorMessage(error);
+  return error && error.message
+    ? `تعذّر بدء المحادثة: ${error.message}`
+    : "تعذّر بدء المحادثة الصوتية. تحقق من الإنترنت وأذونات الميكروفون.";
+}
 
 function stopConversation(message = "انتهت المحادثة الصوتية.") {
   attempt += 1;
-  if (requestController) {
-    requestController.abort();
-    requestController = null;
+  if (tokenController) {
+    tokenController.abort();
+    tokenController = null;
   }
-  releaseRecognition();
+  sessionReady = false;
+  if (cameraTimer) {
+    window.clearInterval(cameraTimer);
+    cameraTimer = null;
+  }
+  stopPlayback();
+  if (liveSocket) {
+    const socket = liveSocket;
+    liveSocket = null;
+    socket.onclose = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onopen = null;
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }
   stopAudioInput();
-  audioPlayer.pause();
-  stopSpeechOutput();
+  transcript.textContent = "";
   updateState("idle", message);
   document.documentElement.classList.remove("voice-conversation-active");
   window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
 
-function scheduleListening(delay = 450) {
-  if (state !== "listening" || document.hidden || restartTimer) return;
-  restartTimer = window.setTimeout(() => {
-    restartTimer = null;
-    if (state !== "listening" || document.hidden) return;
-    if (inputMode === "audio") {
-      startAudioRecorder();
-      return;
-    }
-    if (!recognition) return;
-    try {
-      recognition.start();
-    } catch (error) {
-      if (error.name === "InvalidStateError") {
-        scheduleListening(500);
-        return;
-      }
-      console.error("Unable to start browser speech recognition:", error);
-      stopConversation("تعذّر تشغيل الاستماع الصوتي. المس الشاشة وحاول مرة أخرى.");
-    }
-  }, delay);
-}
-
-async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
-  if (currentAttempt !== attempt) return;
-  transcript.textContent = "";
-
-  let fallbackStarted = false;
-  let hasAudioSource = false;
-  const resumeListeningAfterReply = () => {
-    if (currentAttempt !== attempt || state !== "speaking") return;
-    speechSource = null;
-    audioPlayer.hidden = true;
-    updateState("listening", "أستمع لك؛ تحدث، وسأجيبك بصوت.");
-    scheduleListening();
-  };
-  const useSpeechFallback = (error) => {
-    if (fallbackStarted || currentAttempt !== attempt || state !== "speaking") return;
-    fallbackStarted = true;
-    audioPlayer.pause();
-    audioPlayer.onerror = null;
-
-    if ("speechSynthesis" in window && typeof window.SpeechSynthesisUtterance === "function") {
-      console.warn("Falling back to browser speech for the spoken reply.", error);
-      audioPlayer.hidden = true;
-      speakLocally(reply, currentAttempt);
-      return;
-    }
-
-    console.error("No supported speech output is available.");
-    stopConversation("تعذّر تشغيل الرد صوتيًا. حاول مرة أخرى.");
-  };
-  function showAudioPlayerFallback() {
-    if (currentAttempt !== attempt || state !== "speaking") return;
-    if (!hasAudioSource) {
-      console.error("No playable generated audio is available.");
-      stopConversation("تعذّر تشغيل الرد صوتيًا. حاول مرة أخرى.");
-      return;
-    }
-    audioPlayer.hidden = false;
-    updateState("speaking", "الرد جاهز صوتيًا. استخدم مشغل الصوت لسماعه.");
-    audioPlayer.focus();
-  }
-
-  updateState("speaking", "بصير يرد عليك.");
-  if (typeof audio !== "string" || !audio) {
-    useSpeechFallback("Generated speech audio was unavailable.");
-    return;
-  }
-
-  try {
-    audioPlayer.pause();
-    if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
-    const binary = atob(audio);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    audioObjectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/wav" }));
-    if (speechPlaybackContext) {
-      const buffer = await speechPlaybackContext.decodeAudioData(bytes.buffer.slice(0));
-      if (currentAttempt !== attempt || state !== "speaking") return;
-      const source = speechPlaybackContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(speechPlaybackContext.destination);
-      source.onended = resumeListeningAfterReply;
-      speechSource = source;
-      hasAudioSource = true;
-      source.start();
-    } else {
-      audioPlayer.src = audioObjectUrl;
-      hasAudioSource = true;
-      audioPlayer.onended = resumeListeningAfterReply;
-      audioPlayer.onerror = () => useSpeechFallback("Audio playback failed.");
-      await audioPlayer.play();
-    }
-  } catch (error) {
-    if (currentAttempt !== attempt) return;
-    useSpeechFallback(error);
-  }
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        reject(new Error("تعذّرت قراءة التسجيل الصوتي."));
-        return;
-      }
-      resolve(reader.result.split(",")[1]);
-    };
-    reader.onerror = () => reject(new Error("تعذّرت قراءة التسجيل الصوتي."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function sendAudioMessage(blob) {
-  if (state !== "listening") return;
-  const mimeType = (blob.type || "").split(";")[0].toLowerCase();
-  if (!["audio/aac", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm"].includes(mimeType)) {
-    stopConversation("صيغة تسجيل الصوت غير مدعومة في هذا المتصفح.");
-    return;
-  }
-  await sendTurn("سؤال صوتي", { blob, mimeType });
-}
-
-async function sendMessage(text) {
-  const trimmedText = text.trim();
-  if (!trimmedText || state !== "listening") return;
-  await sendTurn(trimmedText);
-}
-
-async function sendTurn(userText, audioInput = null) {
-  const currentAttempt = attempt;
-  if (state !== "listening") return;
-  let heardText = userText;
-  if (inputMode === "speech" && recognition) recognition.stop();
-  updateState("thinking", audioInput ? "وصل سؤالك؛ بصير يحلله ويجهّز الرد..." : "وصل كلامك؛ بصير يجهّز الرد...");
-  transcript.textContent = `أنت: ${userText}`;
-  requestController = new AbortController();
-
-  try {
-    const image = await captureCameraFrame();
-    const audio = audioInput ? await blobToBase64(audioInput.blob) : null;
-    const response = await fetch(new URL("./api/chat", document.baseURI), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify({
-        messages: [...messages, { role: "user", text: userText }].slice(-MAX_HISTORY),
-        ...(image ? { image } : {}),
-        ...(audio ? { audio: { data: audio, mimeType: audioInput.mimeType } } : {})
-      }),
-      signal: requestController.signal
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const errorMessage = result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.";
-      if (typeof result.text !== "string" || !result.text.trim()) {
-        const error = new Error(errorMessage);
-        error.status = response.status;
-        throw error;
-      }
-      if (audioInput && typeof result.heard === "string" && result.heard.trim()) {
-        heardText = result.heard.trim();
-      }
-      const reply = result.text.trim();
-      messages = [...messages, { role: "user", text: heardText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
-      await speakReply(heardText, reply, result.audio, result.audioMimeType, currentAttempt);
-      return;
-    }
-    if (currentAttempt !== attempt) return;
-
-    const reply = typeof result.text === "string" ? result.text.trim() : "";
-    if (!reply) throw new Error("لم يصل رد نصي من Gemini. حاول مرة أخرى.");
-    if (audioInput && typeof result.heard === "string" && result.heard.trim()) {
-      heardText = result.heard.trim();
-    }
-    messages = [...messages, { role: "user", text: heardText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
-    await speakReply(heardText, reply, result.audio, result.audioMimeType, currentAttempt);
-  } catch (error) {
-    if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
-    console.error("Unable to get a Gemini response:", error);
-    if (error && (error.status === 429 || error.status >= 500)) {
-      await speakServiceUnavailable(userText, error, currentAttempt, audioInput);
-      return;
-    }
-    updateState("listening", error && error.message ? error.message : "تعذّر الحصول على رد. حاول مرة أخرى.");
-    scheduleListening(1400);
-  } finally {
-    if (currentAttempt === attempt) requestController = null;
-  }
-}
-
-function createRecognition() {
-  if (!BrowserSpeechRecognition) {
-    void startAudioFallback();
-    return;
-  }
-  try {
-    recognition = new BrowserSpeechRecognition();
-  } catch (error) {
-    console.error("Unable to create browser speech recognition:", error);
-    void startAudioFallback();
-    return;
-  }
-  recognition.lang = "ar-SA";
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-  recognition.onstart = () => {
-    if (state === "listening") {
-      status.textContent = speechOutputUnlocked
-        ? "أستمع لك؛ تحدث، وسأجيبك بصوت."
-        : "المحادثة جاهزة. المس الشاشة مرة لتفعيل صوت بصير، ثم تحدث.";
-    }
-  };
-  recognition.onresult = (event) => {
-    if (state !== "listening") return;
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      const result = event.results[index];
-      if (result.isFinal && result[0].transcript.trim()) {
-        recognitionNetworkFailures = 0;
-        recognitionRetryDelay = 800;
-        void sendMessage(result[0].transcript);
-        return;
-      }
-    }
-  };
-  recognition.onerror = (event) => {
-    if (state !== "listening") return;
-    if (event.error === "aborted") return;
-    if (event.error === "no-speech") {
-      status.textContent = "ما سمعت كلامك؛ تحدث الآن وسأجيبك.";
-      return;
-    }
-    if (event.error === "network") {
-      recognitionNetworkFailures += 1;
-      if (recognitionNetworkFailures >= 3 && typeof MediaRecorder !== "undefined") {
-        releaseRecognition();
-        status.textContent = "سأستخدم طريقة استماع بديلة لهذا المتصفح.";
-        void startAudioFallback();
-        return;
-      }
-      status.textContent = "تعذّر اتصال خدمة التعرّف على الكلام؛ سأعيد المحاولة تلقائيًا.";
-      recognitionRetryDelay = Math.min(recognitionRetryDelay * 2, 10000);
-      console.warn("Browser speech recognition network error; retrying.");
-      return;
-    }
-    const message = event.error === "not-allowed" || event.error === "service-not-allowed"
-      ? "اسمح باستخدام الميكروفون وخدمة التعرّف على الكلام من إعدادات المتصفح."
-      : event.error === "language-not-supported"
-        ? "التعرّف على العربية غير مدعوم في هذا المتصفح. جرّب Chrome أو Edge."
-        : event.error === "audio-capture"
-          ? "لم يتم العثور على ميكروفون متصل."
-          : "تعذّر التعرّف على كلامك. تحقق من الإنترنت وحاول مرة أخرى.";
-    console.error("Browser speech recognition failed:", event.error);
-    stopConversation(message);
-  };
-  recognition.onend = () => {
-    if (state === "listening" && !document.hidden) scheduleListening(recognitionRetryDelay);
-  };
-}
-
-function startConversation() {
+async function startConversation() {
   if (state !== "idle") return;
   if (location.protocol !== "https:" && location.hostname !== "localhost") {
-    updateState("idle", "تحتاج المحادثة إلى فتح الرابط المنشور الآمن (HTTPS).");
+    updateState("idle", "افتح رابط بصير الآمن عبر HTTPS لبدء المحادثة.");
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia ||
+      typeof WebSocket === "undefined") {
+    updateState("idle", "هذا المتصفح لا يدعم المحادثة الصوتية المباشرة.");
     return;
   }
 
-  attempt += 1;
-  messages = [];
-  inputMode = "speech";
-  recognitionNetworkFailures = 0;
-  document.documentElement.classList.add("voice-conversation-active");
+  const currentAttempt = ++attempt;
+  sessionHandle = null;
+  reconnectAttempts = 0;
   transcript.textContent = "";
-  const cameraDescription = document.getElementById("description");
-  if (cameraDescription && /إذن الكاميرا|الكاميرا لا تتيح|لم يتم تحميل نموذج التعرّف/.test(cameraDescription.textContent)) {
-    pendingAnnouncement = cameraDescription.textContent;
-  }
-  updateState("listening", "اسمح بالميكروفون، ثم المس الشاشة مرة لتفعيل رد بصير الصوتي.");
+  document.documentElement.classList.add("voice-conversation-active");
+  updateState("connecting", "اسمح باستخدام الميكروفون لبدء المحادثة...");
   window.dispatchEvent(new Event("baseer:conversation-start"));
-  createRecognition();
-  scheduleListening(300);
+
+  const microphoneRequest = navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    video: false
+  }).then((stream) => {
+    if (currentAttempt !== attempt) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new DOMException("Conversation was stopped", "AbortError");
+    }
+    microphoneStream = stream;
+    return stream;
+  });
+
+  try {
+    await microphoneRequest;
+    if (currentAttempt !== attempt) return;
+    initializeAudioInput(microphoneStream, currentAttempt);
+    updateState("connecting", "جارٍ الاتصال بالمحادثة الصوتية...");
+    const liveSession = await createLiveToken(currentAttempt);
+    if (currentAttempt !== attempt) return;
+    await connectLiveSocket(liveSession.token, liveSession.model, liveSession.config, null, currentAttempt);
+    if (currentAttempt !== attempt) return;
+
+    startCameraFrames();
+    updateState("listening", audioUnlocked
+      ? "أستمع لك؛ قاطعني متى ما بغيت."
+      : "لمّس الشاشة لتفعيل الصوت، ثم تكلم مع بصير.");
+    const greetingAccepted = sendRealtimeInput({
+      text: "ابدأ بتحية قصيرة وودودة باللهجة السعودية، وقل للمستخدم إنك جاهز للمحادثة."
+    });
+    if (!greetingAccepted) {
+      stopConversation("انقطع اتصال المحادثة قبل بدء الاستماع. حاول مجددًا.");
+    }
+  } catch (error) {
+    if (currentAttempt !== attempt) return;
+    console.error("Unable to start Gemini Live conversation:", error);
+    const microphoneError = error && [
+      "NotAllowedError",
+      "SecurityError",
+      "NotFoundError",
+      "NotReadableError"
+    ].includes(error.name);
+    const message = microphoneError
+      ? microphoneErrorMessage(error)
+      : liveErrorMessage(error);
+    stopConversation(message || "تعذّر بدء المحادثة الصوتية.");
+  } finally {
+    if (currentAttempt === attempt) tokenController = null;
+  }
 }
+
+document.addEventListener("pointerdown", handleUserGesture, { passive: true });
+document.addEventListener("click", handleUserGesture);
+document.addEventListener("keydown", handleUserGesture);
 
 window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
 document.addEventListener("visibilitychange", () => {

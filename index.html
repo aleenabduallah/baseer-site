@@ -51,20 +51,20 @@
     <footer class="assistant-panel">
       <div class="voice-heading">
         <p id="voice-status" class="voice-status" role="status" aria-live="polite">جارٍ تفعيل الاستماع الصوتي...</p>
-        <span class="live-badge"><span></span> محادثة مجانية محدودة</span>
+        <span class="live-badge"><span></span> محادثة صوتية مباشرة</span>
       </div>
       <p id="description" class="description-text" role="status" aria-live="polite" aria-atomic="true">جارٍ تجهيز الكاميرا والمساعد الصوتي...</p>
       <p id="voice-chat-status" class="voice-chat-status" role="status" aria-live="polite">سيبدأ بصير الاستماع تلقائيًا. اسمح باستخدام الميكروفون عند طلب المتصفح.</p>
       <p id="voice-chat-transcript" hidden aria-hidden="true"></p>
       <audio id="voice-chat-audio" controls playsinline preload="none" aria-label="تشغيل رد بصير الصوتي" hidden></audio>
       <p class="safety-note">مساعد تجريبي؛ لا يغني عن العصا البيضاء أو وسائل التنقّل الآمنة.</p>
-      <p class="privacy-note">يرسل بصير التسجيل الصوتي ولقطة من الكاميرا عند كل سؤال إلى Gemini لتحليلهما، ثم يحوّل الرد إلى صوت. قد تُستخدم البيانات لتحسين خدمات Google.</p>
+      <p class="privacy-note">يرسل بصير صوت الميكروفون وإطارًا من الكاميرا كل ثانية أثناء المحادثة إلى Gemini لتوليد رد صوتي. قد تستخدم Google البيانات لتحسين خدماتها؛ لا تضع أمام الكاميرا معلومات لا تريد مشاركتها.</p>
     </footer>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" defer></script>
   <script src="app.js" defer></script>
-  <script src="voice-assistant.js?v=spoken-chat-v6" defer></script>
+  <script src="voice-assistant.js?v=live-chat-v1" defer></script>
 </body>
 </html>

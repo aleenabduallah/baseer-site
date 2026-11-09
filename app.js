@@ -419,7 +419,7 @@ async function detectObjects(forceAnnouncement = false) {
     if (forceAnnouncement && !message) {
       setDescription("لم أتعرف إلى شيء واضح الآن. وجّه الكاميرا نحو الشيء وحاول مرة أخرى.", true);
     } else if (message && (forceAnnouncement || (message !== lastAnnouncement && Date.now() - lastSpokenAt > 4000))) {
-      setDescription(message, true);
+      setDescription(message, !voiceConversationActive);
       lastSpokenAt = Date.now();
     }
   } catch (error) {
