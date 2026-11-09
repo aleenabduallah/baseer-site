@@ -170,7 +170,7 @@ function startAudioRecorder() {
         silenceStartedAt = 0;
       } else if (speechStartedAt) {
         if (!silenceStartedAt) silenceStartedAt = now;
-        if ((now - silenceStartedAt >= 1100 && now - speechStartedAt >= 500) ||
+        if ((now - silenceStartedAt >= 1500 && now - speechStartedAt >= 500) ||
             now - speechStartedAt >= 12000) {
           finishAudioRecording();
         }
@@ -350,6 +350,7 @@ async function sendMessage(text) {
 async function sendTurn(userText, audioInput = null) {
   const currentAttempt = attempt;
   if (state !== "listening") return;
+  let heardText = userText;
   if (inputMode === "speech" && recognition) recognition.stop();
   updateState("thinking", audioInput ? "وصل سؤالك؛ بصير يحلله ويجهّز الرد..." : "وصل كلامك؛ بصير يجهّز الرد...");
   transcript.textContent = `أنت: ${userText}`;
@@ -380,8 +381,11 @@ async function sendTurn(userText, audioInput = null) {
 
     const reply = typeof result.text === "string" ? result.text.trim() : "";
     if (!reply) throw new Error("لم يصل رد نصي من Gemini. حاول مرة أخرى.");
-    messages = [...messages, { role: "user", text: userText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
-    await speakReply(userText, reply, result.audio, result.audioMimeType, currentAttempt);
+    if (audioInput && typeof result.heard === "string" && result.heard.trim()) {
+      heardText = result.heard.trim();
+    }
+    messages = [...messages, { role: "user", text: heardText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
+    await speakReply(heardText, reply, result.audio, result.audioMimeType, currentAttempt);
   } catch (error) {
     if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
     console.error("Unable to get a Gemini response:", error);

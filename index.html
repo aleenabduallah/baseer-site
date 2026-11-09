@@ -55,7 +55,7 @@
       </div>
       <p id="description" class="description-text" role="status" aria-live="polite" aria-atomic="true">جارٍ تجهيز الكاميرا والمساعد الصوتي...</p>
       <p id="voice-chat-status" class="voice-chat-status" role="status" aria-live="polite">سيبدأ بصير الاستماع تلقائيًا. اسمح باستخدام الميكروفون عند طلب المتصفح.</p>
-      <p id="voice-chat-transcript" class="voice-chat-transcript" aria-live="polite"></p>
+      <p id="voice-chat-transcript" class="sr-only" aria-live="polite"></p>
       <audio id="voice-chat-audio" controls playsinline preload="none" aria-label="تشغيل رد بصير الصوتي" hidden></audio>
       <p class="safety-note">مساعد تجريبي؛ لا يغني عن العصا البيضاء أو وسائل التنقّل الآمنة.</p>
       <p class="privacy-note">يرسل بصير التسجيل الصوتي ولقطة من الكاميرا عند كل سؤال إلى Gemini لتحليلهما، ثم يحوّل الرد إلى صوت. قد تُستخدم البيانات لتحسين خدمات Google.</p>
@@ -65,6 +65,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" defer></script>
   <script src="app.js" defer></script>
-  <script src="voice-assistant.js?v=gemini-iphone-audio-v1" defer></script>
+  <script src="voice-assistant.js?v=spoken-conversation-v1" defer></script>
 </body>
 </html>

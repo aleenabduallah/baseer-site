@@ -4,7 +4,7 @@ const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 const GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. إذا أُرسل تسجيل صوتي، افهم سؤال المستخدم المنطوق وأجب عنه. إذا أُرسلت صورة مع آخر رسالة، صف ما يظهر فيها بدقة واذكر الأشياء ومواقعها النسبية، ولا تخمّن التفاصيل غير الواضحة. إذا لم تُرسل صورة، فلا تدّعِ أنك ترى محيط المستخدم واطلب منه تفعيل الكاميرا. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
+const SYSTEM_INSTRUCTION = "أنت بصير، رفيق محادثة صوتي عربي ودود وطبيعي. تحدث مع المستخدم كصديق، وافهم سياق كلامكما السابق، وأجب عن موضوعه بدل الاكتفاء بوصف الكاميرا. اسأل سؤال متابعة عند ملاءمته، وتجنب تكرار التحية أو الوصف في كل دور. اجعل الرد واضحًا ومناسبًا للنطق. إذا سأل عما أمامه أو عن صورة الكاميرا، صف الأشياء الظاهرة باختصار ودقة، ولا تخمّن التفاصيل غير الواضحة. لا تقل إنك ترى شيئًا إذا لم تصلك صورة. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
 const MAX_IMAGE_LENGTH = 1400000;
 const MAX_AUDIO_LENGTH = 2800000;
 const ALLOWED_AUDIO_TYPES = new Set([
@@ -116,7 +116,22 @@ module.exports = async function generateChatReply(request, response) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
         contents,
-        generationConfig: { maxOutputTokens: 180, temperature: 0.6 }
+        generationConfig: audio
+          ? {
+            maxOutputTokens: 240,
+            temperature: 0.6,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                heard: { type: "STRING" },
+                reply: { type: "STRING" }
+              },
+              required: ["heard", "reply"],
+              propertyOrdering: ["heard", "reply"]
+            }
+          }
+          : { maxOutputTokens: 180, temperature: 0.7 }
       }),
       signal: controller.signal
     });
@@ -136,6 +151,21 @@ module.exports = async function generateChatReply(request, response) {
         .join("")
         .trim()
       : "";
+    let heard = "";
+    if (audio && text) {
+      try {
+        const conversationTurn = JSON.parse(text);
+        heard = typeof conversationTurn.heard === "string" ? conversationTurn.heard.trim() : "";
+        text = typeof conversationTurn.reply === "string" ? conversationTurn.reply.trim() : "";
+      } catch (error) {
+        console.error("Gemini audio response did not contain valid conversation JSON.");
+        return sendJson(response, 502, { error: "تعذّر فهم التسجيل الصوتي. تحدث بوضوح وحاول مرة أخرى." });
+      }
+      if (!heard || !text) {
+        console.error("Gemini audio response omitted the transcript or reply.");
+        return sendJson(response, 502, { error: "لم أسمع سؤالك بوضوح. أعده بصوت أوضح من فضلك." });
+      }
+    }
     if (!text) {
       console.error("Gemini chat returned no text candidate.");
       return sendJson(response, 502, { error: "وصل رد فارغ من Gemini. أعد صياغة السؤال وحاول مرة أخرى." });
@@ -156,7 +186,7 @@ module.exports = async function generateChatReply(request, response) {
             text,
             annotations: [{
               type: "speech_metadata",
-              style: "Speak clearly in Arabic, at a calm, natural pace."
+              style: "Speak in natural, friendly conversational Arabic. Match the user's dialect when clear. Speak clearly at a calm pace."
             }]
           }]
         }],
@@ -186,6 +216,7 @@ module.exports = async function generateChatReply(request, response) {
 
     return sendJson(response, 200, {
       text,
+      ...(audio ? { heard } : {}),
       audio: audio.data,
       audioMimeType: typeof audio.mime_type === "string" ? audio.mime_type : "audio/wav"
     });
