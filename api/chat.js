@@ -97,7 +97,7 @@ module.exports = async function generateChatReply(request, response) {
       return sendJson(response, 400, { error: "التسجيل الصوتي غير صالح." });
     }
     contents[contents.length - 1].parts[0].text =
-      "استمع إلى سؤال المستخدم في التسجيل الصوتي المرفق وأجب عنه. استخدم لقطة الكاميرا المرفقة لوصف ما أمامه.";
+      "اكتب في الحقل heard تفريغًا دقيقًا لكلام المستخدم في التسجيل الصوتي المرفق. ثم اكتب في الحقل reply جوابًا طبيعيًا ومناسبًا لمواصلة حديثكما مستفيدًا من سياق المحادثة. إذا سأل عما أمامه، استخدم لقطة الكاميرا المرفقة لوصف الأشياء الظاهرة.";
     contents[contents.length - 1].parts.push({
       inlineData: { mimeType: audio.mimeType, data: audio.data }
     });
