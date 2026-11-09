@@ -64,7 +64,7 @@ module.exports = async function createLiveToken(request, response) {
         bidiGenerateContentSetup: {
           model: LIVE_MODEL,
           systemInstruction: SYSTEM_INSTRUCTION_CONTENT,
-          ...LIVE_CONFIG
+          generationConfig: { responseModalities: ["AUDIO"] }
         },
         fieldMask: "model,systemInstruction,generationConfig.responseModalities"
       }),
