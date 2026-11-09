@@ -1,227 +1,217 @@
+(() => {
 "use strict";
 
 const status = document.getElementById("voice-chat-status");
 const transcript = document.getElementById("voice-chat-transcript");
-const audio = document.getElementById("voice-chat-audio");
+const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const MAX_HISTORY = 8;
 
-let connection = null;
-let events = null;
-let microphone = null;
-let connectionAttempt = 0;
-let connectionAbortController = null;
+let recognition = null;
 let state = "idle";
-let transcriptBuffer = "";
+let messages = [];
+let requestController = null;
+let restartTimer = null;
+let attempt = 0;
 let resumeAfterVisibility = false;
-
-audio.autoplay = true;
-audio.playsInline = true;
+let retryOnInteraction = false;
 
 function updateState(nextState, message) {
   state = nextState;
   status.textContent = message;
 }
 
-function waitForIceGathering(peer, signal, timeoutMs = 12000) {
-  if (peer.iceGatheringState === "complete") return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("انتهت مهلة تجهيز اتصال الصوت."));
-    }, timeoutMs);
-
-    function cleanup() {
-      window.clearTimeout(timer);
-      peer.removeEventListener("icegatheringstatechange", onStateChange);
-      signal.removeEventListener("abort", onAbort);
+function releaseRecognition() {
+  if (restartTimer) {
+    window.clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+  if (recognition) {
+    const currentRecognition = recognition;
+    recognition = null;
+    currentRecognition.onresult = null;
+    currentRecognition.onend = null;
+    currentRecognition.onerror = null;
+    try {
+      currentRecognition.stop();
+    } catch (error) {
+      if (error.name !== "InvalidStateError") {
+        console.error("Unable to stop browser speech recognition:", error);
+      }
     }
-
-    function onStateChange() {
-      if (peer.iceGatheringState !== "complete") return;
-      cleanup();
-      resolve();
-    }
-
-    function onAbort() {
-      cleanup();
-      reject(new DOMException("Connection was cancelled.", "AbortError"));
-    }
-
-    peer.addEventListener("icegatheringstatechange", onStateChange);
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (peer.iceGatheringState === "complete") {
-      cleanup();
-      resolve();
-    } else if (signal.aborted) {
-      onAbort();
-    }
-  });
-}
-
-function handleServerEvent(event) {
-  let message;
-  try {
-    message = JSON.parse(event.data);
-  } catch (error) {
-    console.warn("Unable to read voice conversation event:", error);
-    return;
   }
-
-  if (message.type === "session.started" || message.type === "session.created") {
-    updateState("active", "المحادثة جاهزة. تحدث الآن، ويمكنك مقاطعة بصير في أي وقت.");
-  } else if (message.type === "input_audio_buffer.speech_started") {
-    status.textContent = "أستمع إليك...";
-  } else if (message.type === "response.created") {
-    status.textContent = "بصير يجيبك... تحدث لمقاطعته.";
-  } else if (message.type === "response.output_audio_transcript.delta" && typeof message.delta === "string") {
-    transcriptBuffer += message.delta;
-  } else if (message.type === "response.output_audio_transcript.done" && typeof message.transcript === "string") {
-    transcriptBuffer = message.transcript;
-    transcript.textContent = transcriptBuffer;
-  } else if (message.type === "response.done" && state === "active") {
-    status.textContent = "تحدث متى شئت، وسيستمع بصير ويرد عليك.";
-  } else if (message.type === "error") {
-    console.error("Voice conversation service error:", message.error);
-    status.textContent = "حدث خطأ في المحادثة الصوتية. أنهِ الجلسة وحاول مرة أخرى.";
-  }
-}
-
-function releaseResources() {
-  if (connectionAbortController) {
-    connectionAbortController.abort();
-    connectionAbortController = null;
-  }
-  if (events) {
-    events.close();
-    events = null;
-  }
-  if (connection) {
-    const currentConnection = connection;
-    connection = null;
-    currentConnection.ontrack = null;
-    currentConnection.onconnectionstatechange = null;
-    currentConnection.close();
-  }
-  if (microphone) {
-    microphone.getTracks().forEach((track) => track.stop());
-    microphone = null;
-  }
-  audio.pause();
-  audio.srcObject = null;
-  window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
 
 function stopConversation(message = "انتهت المحادثة الصوتية.") {
-  connectionAttempt += 1;
-  releaseResources();
+  attempt += 1;
+  if (requestController) {
+    requestController.abort();
+    requestController = null;
+  }
+  releaseRecognition();
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   updateState("idle", message);
+  window.dispatchEvent(new Event("baseer:conversation-stop"));
 }
 
-async function startConversation() {
-  const attempt = ++connectionAttempt;
-  connectionAbortController = new AbortController();
-  const abortSignal = connectionAbortController.signal;
-  updateState("connecting", "جارٍ طلب إذن الميكروفون وتجهيز المحادثة...");
-  transcript.textContent = "";
-  transcriptBuffer = "";
-  window.dispatchEvent(new Event("baseer:conversation-start"));
+function scheduleListening(delay = 450) {
+  if (state !== "listening" || document.hidden || restartTimer) return;
+  restartTimer = window.setTimeout(() => {
+    restartTimer = null;
+    if (state !== "listening" || document.hidden || !recognition) return;
+    try {
+      recognition.start();
+    } catch (error) {
+      if (error.name === "InvalidStateError") {
+        scheduleListening(500);
+        return;
+      }
+      console.error("Unable to start browser speech recognition:", error);
+      stopConversation("تعذّر تشغيل الاستماع الصوتي. المس الشاشة وحاول مرة أخرى.");
+      retryOnInteraction = true;
+    }
+  }, delay);
+}
+
+function speakReply(userText, reply, currentAttempt) {
+  if (currentAttempt !== attempt) return;
+  transcript.textContent = `أنت: ${userText}\nبصير: ${reply}`;
+
+  if (!("speechSynthesis" in window)) {
+    updateState("idle", "ظهر الرد كتابةً، لكن هذا المتصفح لا يدعم النطق الصوتي.");
+    window.dispatchEvent(new Event("baseer:conversation-stop"));
+    retryOnInteraction = true;
+    return;
+  }
+
+  updateState("speaking", "بصير يرد عليك...");
+  const utterance = new SpeechSynthesisUtterance(reply);
+  utterance.lang = "ar-SA";
+  utterance.rate = 0.96;
+  utterance.onend = () => {
+    if (currentAttempt !== attempt || state !== "speaking") return;
+    updateState("listening", "تحدث بعد سماع الرد؛ قد يتوقف عند نفاد الحصة المجانية.");
+    scheduleListening();
+  };
+  utterance.onerror = (error) => {
+    if (currentAttempt !== attempt || state !== "speaking") return;
+    console.error("Unable to speak Gemini response:", error.error);
+    updateState("listening", "تعذّر نطق الرد. يمكنك قراءة النص ثم متابعة الحديث.");
+    scheduleListening();
+  };
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
+}
+
+async function sendMessage(text) {
+  const currentAttempt = attempt;
+  const trimmedText = text.trim();
+  if (!trimmedText || state !== "listening") return;
+
+  if (recognition) recognition.stop();
+  updateState("thinking", "وصل كلامك؛ بصير يجهّز الرد...");
+  transcript.textContent = `أنت: ${trimmedText}`;
+  requestController = new AbortController();
 
   try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.RTCPeerConnection) {
-      throw new Error("هذا المتصفح لا يدعم المحادثة الصوتية المباشرة.");
-    }
-    if (location.protocol !== "https:" && location.hostname !== "localhost") {
-      throw new Error("تحتاج المحادثة الصوتية إلى موقع HTTPS منشور مع خادم محادثة.");
-    }
-
-    microphone = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
-    if (attempt !== connectionAttempt) {
-      microphone.getTracks().forEach((track) => track.stop());
-      microphone = null;
-      return;
-    }
-
-    connection = new RTCPeerConnection();
-    const currentConnection = connection;
-    microphone.getAudioTracks().forEach((track) => currentConnection.addTrack(track, microphone));
-    currentConnection.ontrack = (event) => {
-      audio.srcObject = event.streams[0] || new MediaStream([event.track]);
-      audio.play().catch((error) => {
-        console.error("Unable to play the assistant audio:", error);
-        status.textContent = "تعذّر تشغيل صوت بصير. تحقق من إعدادات الصوت ثم أعد المحاولة.";
-      });
-    };
-    currentConnection.onconnectionstatechange = () => {
-      if (connection !== currentConnection || currentConnection.connectionState !== "failed") return;
-      stopConversation("انقطع اتصال المحادثة. تحقق من الإنترنت ثم حاول مجددًا.");
-    };
-    events = currentConnection.createDataChannel("oai-events");
-    events.onmessage = handleServerEvent;
-    events.onopen = () => {
-      if (connection === currentConnection) {
-        updateState("active", "المحادثة جاهزة. تحدث الآن، ويمكنك مقاطعة بصير في أي وقت.");
-      }
-    };
-    events.onerror = (error) => {
-      console.error("Voice conversation event channel failed:", error);
-      status.textContent = "تعذّر استقبال المحادثة الصوتية. أنهِ الجلسة وحاول مرة أخرى.";
-    };
-
-    const offer = await currentConnection.createOffer();
-    await currentConnection.setLocalDescription(offer);
-    await waitForIceGathering(currentConnection, abortSignal);
-    if (attempt !== connectionAttempt) return;
-
-    const response = await fetch(new URL("./api/session", document.baseURI), {
+    const response = await fetch(new URL("./api/chat", document.baseURI), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ sdp: currentConnection.localDescription.sdp }),
-      signal: abortSignal
+      body: JSON.stringify({ messages: [...messages, { role: "user", text: trimmedText }].slice(-MAX_HISTORY) }),
+      signal: requestController.signal
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(result.error || `تعذّر إنشاء جلسة المحادثة (${response.status}).`);
+      const error = new Error(result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.");
+      error.status = response.status;
+      throw error;
     }
-    if (typeof result.sdp !== "string" || !result.sdp) {
-      throw new Error("استجابة خدمة المحادثة غير مكتملة.");
-    }
-    if (attempt !== connectionAttempt) return;
+    if (currentAttempt !== attempt) return;
 
-    await currentConnection.setRemoteDescription({ type: "answer", sdp: result.sdp });
-    if (attempt === connectionAttempt) {
-      updateState("active", "تم الاتصال. تحدث بالعربية، ويمكنك مقاطعة بصير في أي وقت.");
-    }
+    const reply = typeof result.text === "string" ? result.text.trim() : "";
+    if (!reply) throw new Error("لم يصل رد نصي من Gemini. حاول مرة أخرى.");
+    messages = [...messages, { role: "user", text: trimmedText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
+    speakReply(trimmedText, reply, currentAttempt);
   } catch (error) {
-    if (attempt !== connectionAttempt) return;
-    console.error("Unable to start the voice conversation:", error);
-    const message = error && error.name === "NotAllowedError"
-      ? "لم يُسمح باستخدام الميكروفون. فعّل إذن الميكروفون من إعدادات المتصفح."
-      : error && error.name === "TypeError"
-        ? "تعذّر الوصول إلى خادم المحادثة. تحقق من الإنترنت ومن نشر الخادم وإعداد مفتاح الخدمة."
-        : error && error.message
-          ? error.message
-          : "تعذّر بدء المحادثة الصوتية. تحقق من الاتصال وحاول مرة أخرى.";
-    stopConversation(message);
+    if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
+    console.error("Unable to get a Gemini response:", error);
+    if (error && (error.status === 429 || error.status === 503)) {
+      stopConversation(error.message);
+      retryOnInteraction = true;
+      return;
+    }
+    updateState("listening", error && error.message ? error.message : "تعذّر الحصول على رد. حاول مرة أخرى.");
+    scheduleListening(1400);
+  } finally {
+    if (currentAttempt === attempt) requestController = null;
   }
 }
 
-window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
+function createRecognition() {
+  recognition = new BrowserSpeechRecognition();
+  recognition.lang = "ar-SA";
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => {
+    if (state === "listening") status.textContent = "تحدث الآن؛ سيجيب بصير بعد انتهاء كلامك.";
+  };
+  recognition.onresult = (event) => {
+    if (state !== "listening") return;
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      if (result.isFinal && result[0].transcript.trim()) {
+        void sendMessage(result[0].transcript);
+        return;
+      }
+    }
+  };
+  recognition.onerror = (event) => {
+    if (state !== "listening") return;
+    if (event.error === "no-speech" || event.error === "aborted") return;
+    const message = event.error === "not-allowed" || event.error === "service-not-allowed"
+      ? "اسمح باستخدام الميكروفون وخدمة التعرّف على الكلام من إعدادات المتصفح."
+      : event.error === "language-not-supported"
+        ? "التعرّف على العربية غير مدعوم في هذا المتصفح. جرّب Chrome أو Edge."
+        : event.error === "audio-capture"
+          ? "لم يتم العثور على ميكروفون متصل."
+          : "تعذّر التعرّف على كلامك. تحقق من الإنترنت وحاول مرة أخرى.";
+    console.error("Browser speech recognition failed:", event.error);
+    stopConversation(message);
+    retryOnInteraction = true;
+  };
+  recognition.onend = () => {
+    if (state === "listening" && !document.hidden) scheduleListening();
+  };
+}
+
+function startConversation() {
+  if (state !== "idle") return;
+  if (!BrowserSpeechRecognition) {
+    updateState("idle", "المحادثة الصوتية تحتاج Chrome أو Edge يدعم التعرّف على العربية.");
+    retryOnInteraction = false;
+    return;
+  }
+  if (location.protocol !== "https:" && location.hostname !== "localhost") {
+    updateState("idle", "تحتاج المحادثة إلى فتح الرابط المنشور الآمن (HTTPS).");
+    return;
+  }
+
+  attempt += 1;
+  messages = [];
+  transcript.textContent = "";
+  updateState("listening", "جارٍ تشغيل الميكروفون... اسمح بإذن الميكروفون عند الطلب.");
+  window.dispatchEvent(new Event("baseer:conversation-start"));
+  createRecognition();
+  retryOnInteraction = false;
+  scheduleListening(300);
+}
+
 document.addEventListener("pointerdown", () => {
-  if (!audio.srcObject || !audio.paused) return;
-  audio.play().then(() => {
-    status.textContent = "تم تفعيل الصوت. تحدث بالعربية لمتابعة المحادثة.";
-  }).catch((error) => {
-    console.error("Unable to resume assistant audio after user interaction:", error);
-    status.textContent = "تعذّر تشغيل صوت بصير. تحقق من إعدادات الصوت في المتصفح.";
-  });
+  if (retryOnInteraction && state === "idle") startConversation();
 }, true);
+
+window.addEventListener("pagehide", () => stopConversation("انتهت المحادثة الصوتية."));
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && state !== "idle") {
     resumeAfterVisibility = true;
@@ -233,3 +223,4 @@ document.addEventListener("visibilitychange", () => {
 });
 
 startConversation();
+})();
