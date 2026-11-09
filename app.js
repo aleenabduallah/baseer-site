@@ -1,6 +1,9 @@
 "use strict";
 
 const video = document.getElementById("camera");
+video.autoplay = true;
+video.playsInline = true;
+video.muted = true;
 const stage = document.getElementById("camera-stage");
 const placeholder = document.getElementById("camera-placeholder");
 const description = document.getElementById("description");
@@ -105,6 +108,9 @@ let speaking = false;
 let recognitionActive = false;
 let recognitionAvailable = Boolean(SpeechRecognition);
 let autoSpeak = true;
+let cameraRequested = false;
+let cameraStartId = 0;
+let cameraStartController = null;
 
 const furnitureLabels = new Set(["chair", "couch", "bed", "dining table"]);
 const highConfidenceLabels = new Set(["person", "chair", "couch", "bed", "dining table", "toilet"]);
@@ -381,29 +387,86 @@ async function startCamera() {
     return;
   }
 
+  cameraRequested = true;
   cameraStarting = true;
+  const startId = ++cameraStartId;
+  const startController = new AbortController();
+  cameraStartController = startController;
   setStatus("جارٍ تجهيز المساعدة", "loading");
   setDescription("جارٍ تشغيل الكاميرا وتحميل نموذج التعرّف.");
 
+  let requestedStream = null;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const permission = await navigator.permissions.query({ name: "camera" });
+        if (permission.state === "denied") {
+          cameraRequested = false;
+          cameraPermissionBlocked = true;
+          setDescription("إذن الكاميرا مرفوض. اسمح باستخدام الكاميرا من إعدادات المتصفح ثم حاول مجددًا.", true);
+          setStatus("الكاميرا متوقفة");
+          return;
+        }
+      } catch (error) {
+        console.warn("Camera permission state is unavailable; requesting camera access directly:", error);
+      }
+    }
+    if (startId !== cameraStartId || !cameraRequested) return;
+
+    requestedStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
-        frameRate: { ideal: 30, min: 15 },
-        aspectRatio: { ideal: 16 / 9 }
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
       }
     });
-    model = model || await window.cocoSsd.load({ base: "mobilenet_v2" });
+    if (startId !== cameraStartId || !cameraRequested) {
+      requestedStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+
+    stream = requestedStream;
+    stream.getTracks().forEach((track) => {
+      track.addEventListener("ended", () => {
+        if (stream !== requestedStream || track.readyState !== "ended") return;
+        stopCamera();
+        setDescription("انقطع اتصال الكاميرا. قل: ابدأ يا بصير لإعادة المحاولة.", true);
+      }, { once: true });
+    });
     video.srcObject = stream;
     await new Promise((resolve, reject) => {
-      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) return resolve();
-      video.addEventListener("loadedmetadata", resolve, { once: true });
-      video.addEventListener("error", () => reject(new Error("Camera metadata could not be loaded")), { once: true });
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        resolve();
+        return;
+      }
+      const cleanup = () => {
+        video.removeEventListener("loadedmetadata", onLoadedMetadata);
+        video.removeEventListener("error", onVideoError);
+        startController.signal.removeEventListener("abort", onAbort);
+      };
+      const onLoadedMetadata = () => {
+        cleanup();
+        resolve();
+      };
+      const onVideoError = () => {
+        cleanup();
+        reject(new Error("Camera metadata could not be loaded"));
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("Camera startup was cancelled"));
+      };
+      video.addEventListener("loadedmetadata", onLoadedMetadata);
+      video.addEventListener("error", onVideoError);
+      startController.signal.addEventListener("abort", onAbort, { once: true });
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) onLoadedMetadata();
     });
     await video.play();
+    if (startId !== cameraStartId || !cameraRequested) return;
+
+    model = model || await window.cocoSsd.load({ base: "mobilenet_v2" });
+    if (startId !== cameraStartId || !cameraRequested) return;
     placeholder.hidden = true;
     video.classList.add("is-visible");
     stage.classList.add("is-active");
@@ -412,25 +475,37 @@ async function startCamera() {
     setDescription("الكاميرا تعمل. حرّكها ببطء، وسأصف لك ما أتعرف إليه.");
     detectionTimer = window.setInterval(detectObjects, 1100);
   } catch (error) {
-    console.error("Unable to start camera or model:", error);
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      stream = null;
+    if (startId !== cameraStartId) {
+      if (requestedStream) requestedStream.getTracks().forEach((track) => track.stop());
+      return;
     }
-    const message = error.name === "NotAllowedError"
+    console.error("Unable to start camera or model:", error);
+    stopCamera();
+    const errorName = error && error.name;
+    const message = errorName === "NotAllowedError" || errorName === "SecurityError"
       ? "لم يصل إذن الكاميرا. اسمح بالكاميرا من إعدادات Safari، ثم المس الشاشة مرة للمحاولة مجددًا."
-      : error.name === "NotFoundError"
+      : errorName === "NotFoundError"
         ? "لم يتم العثور على كاميرا متصلة بهذا الجهاز."
         : "تعذّر تشغيل الكاميرا أو نموذج التعرّف. تحقّق من اتصال الإنترنت وإذن الكاميرا ثم حاول مجددًا.";
     setDescription(message, true);
     setStatus("الكاميرا متوقفة");
-    cameraPermissionBlocked = error.name === "NotAllowedError";
+    cameraPermissionBlocked = errorName === "NotAllowedError" || errorName === "SecurityError";
   } finally {
-    cameraStarting = false;
+    if (startId === cameraStartId) {
+      cameraStarting = false;
+      cameraStartController = null;
+    }
   }
 }
 
 function stopCamera() {
+  cameraRequested = false;
+  cameraStartId += 1;
+  cameraStarting = false;
+  if (cameraStartController) {
+    cameraStartController.abort();
+    cameraStartController = null;
+  }
   if (detectionTimer !== null) {
     window.clearInterval(detectionTimer);
     detectionTimer = null;
@@ -453,9 +528,29 @@ document.addEventListener("visibilitychange", () => {
     if (recognitionRestartTimer) window.clearTimeout(recognitionRestartTimer);
     recognitionRestartTimer = null;
     if (recognition) recognition.stop();
+    if (cameraRequested || stream || cameraStarting) {
+      cameraStartId += 1;
+      cameraStarting = false;
+      if (cameraStartController) {
+        cameraStartController.abort();
+        cameraStartController = null;
+      }
+      if (detectionTimer !== null) {
+        window.clearInterval(detectionTimer);
+        detectionTimer = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      video.classList.remove("is-visible");
+      stage.classList.remove("is-active");
+      placeholder.hidden = false;
+    }
   } else {
     startListening();
-  }
+    if (cameraRequested && !stream && !cameraStarting) startCamera();  }
 });
 initializeVoiceCommands();
 
