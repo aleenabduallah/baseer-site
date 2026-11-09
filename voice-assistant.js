@@ -16,6 +16,7 @@ let restartTimer = null;
 let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
+let recognitionRetryDelay = 800;
 
 async function captureCameraFrame() {
   if (!camera) return null;
@@ -191,6 +192,7 @@ function createRecognition() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
+    recognitionRetryDelay = 800;
     if (state === "listening") status.textContent = "تحدث الآن؛ سيجيب بصير بعد انتهاء كلامك.";
   };
   recognition.onresult = (event) => {
@@ -205,7 +207,17 @@ function createRecognition() {
   };
   recognition.onerror = (event) => {
     if (state !== "listening") return;
-    if (event.error === "no-speech" || event.error === "aborted") return;
+    if (event.error === "aborted") return;
+    if (event.error === "no-speech") {
+      status.textContent = "ما سمعت كلامك؛ تحدث الآن وسأجيبك.";
+      return;
+    }
+    if (event.error === "network") {
+      status.textContent = "تعذّر اتصال خدمة التعرّف على الكلام؛ سأعيد المحاولة تلقائيًا.";
+      recognitionRetryDelay = Math.min(recognitionRetryDelay * 2, 10000);
+      console.warn("Browser speech recognition network error; retrying.");
+      return;
+    }
     const message = event.error === "not-allowed" || event.error === "service-not-allowed"
       ? "اسمح باستخدام الميكروفون وخدمة التعرّف على الكلام من إعدادات المتصفح."
       : event.error === "language-not-supported"
@@ -217,7 +229,7 @@ function createRecognition() {
     stopConversation(message);
   };
   recognition.onend = () => {
-    if (state === "listening" && !document.hidden) scheduleListening();
+    if (state === "listening" && !document.hidden) scheduleListening(recognitionRetryDelay);
   };
 }
 
