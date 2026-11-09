@@ -4,8 +4,17 @@ const MAX_MESSAGES = 10;
 const MAX_MESSAGE_LENGTH = 1500;
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 const GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. إذا أُرسلت صورة مع آخر رسالة، صف ما يظهر فيها بدقة واذكر الأشياء ومواقعها النسبية، ولا تخمّن التفاصيل غير الواضحة. إذا لم تُرسل صورة، فلا تدّعِ أنك ترى محيط المستخدم واطلب منه تفعيل الكاميرا. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
+const SYSTEM_INSTRUCTION = "أنت بصير، مساعد صوتي عربي ودود ومختصر. أجب بلغة المستخدم وبأسلوب واضح ومناسب للنطق. إذا أُرسل تسجيل صوتي، افهم سؤال المستخدم المنطوق وأجب عنه. إذا أُرسلت صورة مع آخر رسالة، صف ما يظهر فيها بدقة واذكر الأشياء ومواقعها النسبية، ولا تخمّن التفاصيل غير الواضحة. إذا لم تُرسل صورة، فلا تدّعِ أنك ترى محيط المستخدم واطلب منه تفعيل الكاميرا. لا تقدّم ردك بديلًا عن وسائل التنقل الآمنة.";
 const MAX_IMAGE_LENGTH = 1400000;
+const MAX_AUDIO_LENGTH = 2800000;
+const ALLOWED_AUDIO_TYPES = new Set([
+  "audio/aac",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm"
+]);
 
 function sendJson(response, status, body) {
   response.status(status).setHeader("Content-Type", "application/json; charset=utf-8");
@@ -75,6 +84,20 @@ module.exports = async function generateChatReply(request, response) {
     }
     contents[contents.length - 1].parts.push({
       inlineData: { mimeType: "image/jpeg", data: image }
+    });
+  }
+  const audio = body && body.audio;
+  if (audio !== undefined) {
+    if (!audio || typeof audio.data !== "string" ||
+        audio.data.length > MAX_AUDIO_LENGTH ||
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(audio.data) ||
+        !ALLOWED_AUDIO_TYPES.has(audio.mimeType)) {
+      return sendJson(response, 400, { error: "التسجيل الصوتي غير صالح." });
+    }
+    contents[contents.length - 1].parts[0].text =
+      "استمع إلى سؤال المستخدم في التسجيل الصوتي المرفق وأجب عنه. استخدم لقطة الكاميرا المرفقة لوصف ما أمامه.";
+    contents[contents.length - 1].parts.push({
+      inlineData: { mimeType: audio.mimeType, data: audio.data }
     });
   }
 

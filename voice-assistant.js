@@ -17,6 +17,16 @@ let attempt = 0;
 let resumeAfterVisibility = false;
 let audioObjectUrl = null;
 let recognitionRetryDelay = 800;
+let recognitionNetworkFailures = 0;
+let inputMode = "speech";
+let microphoneStream = null;
+let audioContext = null;
+let audioAnalyser = null;
+let audioMonitor = null;
+let recorder = null;
+let recorderChunks = [];
+let speechStartedAt = 0;
+let silenceStartedAt = 0;
 
 async function captureCameraFrame() {
   if (!camera) return null;
@@ -65,6 +75,170 @@ function releaseRecognition() {
   }
 }
 
+function stopAudioInput() {
+  if (audioMonitor) {
+    window.clearInterval(audioMonitor);
+    audioMonitor = null;
+  }
+  if (recorder) {
+    const currentRecorder = recorder;
+    recorder = null;
+    currentRecorder.ondataavailable = null;
+    currentRecorder.onstop = null;
+    if (currentRecorder.state !== "inactive") {
+      try {
+        currentRecorder.stop();
+      } catch (error) {
+        console.error("Unable to stop audio recording:", error);
+      }
+    }
+  }
+  recorderChunks = [];
+  speechStartedAt = 0;
+  silenceStartedAt = 0;
+  if (microphoneStream) {
+    microphoneStream.getTracks().forEach((track) => track.stop());
+    microphoneStream = null;
+  }
+  if (audioContext) {
+    const currentContext = audioContext;
+    audioContext = null;
+    audioAnalyser = null;
+    void currentContext.close().catch((error) => {
+      console.error("Unable to close audio input:", error);
+    });
+  }
+}
+
+function finishAudioRecording() {
+  if (recorder && recorder.state === "recording") recorder.stop();
+}
+
+function startAudioRecorder() {
+  if (state !== "listening" || document.hidden || inputMode !== "audio" ||
+      !microphoneStream || recorder) return;
+
+  try {
+    const mimeType = typeof MediaRecorder.isTypeSupported === "function"
+      ? ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+        .find((type) => MediaRecorder.isTypeSupported(type))
+      : "";
+    recorder = mimeType
+      ? new MediaRecorder(microphoneStream, { mimeType })
+      : new MediaRecorder(microphoneStream);
+    recorderChunks = [];
+    speechStartedAt = 0;
+    silenceStartedAt = 0;
+    recorder.ondataavailable = (event) => {
+      if (speechStartedAt && event.data.size) recorderChunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      const currentRecorder = recorder;
+      recorder = null;
+      const hasSpeech = speechStartedAt > 0;
+      const clip = new Blob(recorderChunks, {
+        type: currentRecorder && currentRecorder.mimeType ? currentRecorder.mimeType : "audio/mp4"
+      });
+      recorderChunks = [];
+      speechStartedAt = 0;
+      silenceStartedAt = 0;
+      if (hasSpeech && clip.size > 0 && state === "listening") {
+        void sendAudioMessage(clip);
+      } else if (state === "listening") {
+        scheduleListening(250);
+      }
+    };
+    recorder.start(250);
+    if (audioMonitor) window.clearInterval(audioMonitor);
+    audioMonitor = window.setInterval(() => {
+      if (state !== "listening" || !audioAnalyser || !recorder ||
+          recorder.state !== "recording") return;
+      const samples = new Uint8Array(audioAnalyser.fftSize);
+      audioAnalyser.getByteTimeDomainData(samples);
+      let total = 0;
+      for (const sample of samples) {
+        const amplitude = (sample - 128) / 128;
+        total += amplitude * amplitude;
+      }
+      const volume = Math.sqrt(total / samples.length);
+      const now = Date.now();
+      if (volume >= 0.025) {
+        if (!speechStartedAt) {
+          speechStartedAt = now;
+          recorderChunks = [];
+        }
+        silenceStartedAt = 0;
+      } else if (speechStartedAt) {
+        if (!silenceStartedAt) silenceStartedAt = now;
+        if ((now - silenceStartedAt >= 1100 && now - speechStartedAt >= 500) ||
+            now - speechStartedAt >= 12000) {
+          finishAudioRecording();
+        }
+      }
+    }, 100);
+    status.textContent = "أستمع لك؛ تحدث، وسأجيب بعد انتهائك.";
+  } catch (error) {
+    console.error("Unable to start audio recording:", error);
+    stopConversation("تعذّر بدء تسجيل الصوت. تحقق من إذن الميكروفون ثم أعد تحميل الصفحة.");
+  }
+}
+
+function resumeAudioInputFromGesture() {
+  if (!audioContext || audioContext.state !== "suspended" || state !== "listening" ||
+      inputMode !== "audio") return;
+  audioContext.resume()
+    .then(() => {
+      if (audioContext && audioContext.state === "running") {
+        status.textContent = "أستمع لك؛ تحدث، وسأجيب بعد انتهائك.";
+        startAudioRecorder();
+      }
+    })
+    .catch((error) => console.error("Unable to resume microphone audio processing:", error));
+}
+
+async function startAudioFallback() {
+  inputMode = "audio";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia ||
+      typeof MediaRecorder === "undefined") {
+    stopConversation("هذا المتصفح لا يدعم تسجيل الصوت للمحادثة. جرّبي Safari محدثًا أو جهازًا آخر.");
+    return;
+  }
+  updateState("listening", "جارٍ تفعيل الميكروفون للمحادثة الصوتية...");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
+    if (state !== "listening" || document.hidden) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    microphoneStream = stream;
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) throw new Error("AudioContext is unavailable");
+    audioContext = new AudioContextConstructor();
+    await audioContext.resume();
+    audioAnalyser = audioContext.createAnalyser();
+    audioAnalyser.fftSize = 512;
+    audioContext.createMediaStreamSource(microphoneStream).connect(audioAnalyser);
+    if (audioContext.state !== "running") {
+      status.textContent = "المتصفح يحتاج لمسة على الشاشة لتفعيل الاستماع؛ المس الشاشة مرة ثم تحدث.";
+      return;
+    }
+    startAudioRecorder();
+  } catch (error) {
+    console.error("Unable to initialize audio recording:", error);
+    const message = error && (error.name === "NotAllowedError" || error.name === "SecurityError")
+      ? "اسمحي للمتصفح باستخدام الميكروفون ثم أعيدي تحميل الصفحة."
+      : error && error.name === "NotFoundError"
+        ? "لم يتم العثور على ميكروفون متصل."
+        : "تعذّر تشغيل الميكروفون. تحققي من إعداداته وحاولي مرة أخرى.";
+    stopConversation(message);
+  }
+}
+
+document.addEventListener("pointerdown", resumeAudioInputFromGesture, { passive: true });
+
 function stopConversation(message = "انتهت المحادثة الصوتية.") {
   attempt += 1;
   if (requestController) {
@@ -72,6 +246,7 @@ function stopConversation(message = "انتهت المحادثة الصوتية.
     requestController = null;
   }
   releaseRecognition();
+  stopAudioInput();
   audioPlayer.pause();
   updateState("idle", message);
   window.dispatchEvent(new Event("baseer:conversation-stop"));
@@ -81,7 +256,12 @@ function scheduleListening(delay = 450) {
   if (state !== "listening" || document.hidden || restartTimer) return;
   restartTimer = window.setTimeout(() => {
     restartTimer = null;
-    if (state !== "listening" || document.hidden || !recognition) return;
+    if (state !== "listening" || document.hidden) return;
+    if (inputMode === "audio") {
+      startAudioRecorder();
+      return;
+    }
+    if (!recognition) return;
     try {
       recognition.start();
     } catch (error) {
@@ -136,31 +316,62 @@ async function speakReply(userText, reply, audio, mimeType, currentAttempt) {
   }
 }
 
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("تعذّرت قراءة التسجيل الصوتي."));
+        return;
+      }
+      resolve(reader.result.split(",")[1]);
+    };
+    reader.onerror = () => reject(new Error("تعذّرت قراءة التسجيل الصوتي."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendAudioMessage(blob) {
+  if (state !== "listening") return;
+  const mimeType = (blob.type || "").split(";")[0].toLowerCase();
+  if (!["audio/aac", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm"].includes(mimeType)) {
+    stopConversation("صيغة تسجيل الصوت غير مدعومة في هذا المتصفح.");
+    return;
+  }
+  await sendTurn("سؤال صوتي", { blob, mimeType });
+}
+
 async function sendMessage(text) {
-  const currentAttempt = attempt;
   const trimmedText = text.trim();
   if (!trimmedText || state !== "listening") return;
+  await sendTurn(trimmedText);
+}
 
-  if (recognition) recognition.stop();
-  updateState("thinking", "وصل كلامك؛ بصير يجهّز الرد...");
-  transcript.textContent = `أنت: ${trimmedText}`;
+async function sendTurn(userText, audioInput = null) {
+  const currentAttempt = attempt;
+  if (state !== "listening") return;
+  if (inputMode === "speech" && recognition) recognition.stop();
+  updateState("thinking", audioInput ? "وصل سؤالك؛ بصير يحلله ويجهّز الرد..." : "وصل كلامك؛ بصير يجهّز الرد...");
+  transcript.textContent = `أنت: ${userText}`;
   requestController = new AbortController();
 
   try {
     const image = await captureCameraFrame();
+    const audio = audioInput ? await blobToBase64(audioInput.blob) : null;
     const response = await fetch(new URL("./api/chat", document.baseURI), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
-        messages: [...messages, { role: "user", text: trimmedText }].slice(-MAX_HISTORY),
-        ...(image ? { image } : {})
+        messages: [...messages, { role: "user", text: userText }].slice(-MAX_HISTORY),
+        ...(image ? { image } : {}),
+        ...(audio ? { audio: { data: audio, mimeType: audioInput.mimeType } } : {})
       }),
       signal: requestController.signal
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (typeof result.text === "string") transcript.textContent = `أنت: ${trimmedText}\nبصير: ${result.text}`;
+      if (typeof result.text === "string") transcript.textContent = `أنت: ${userText}\nبصير: ${result.text}`;
       const error = new Error(result.error || "تعذّر الحصول على رد من Gemini. حاول مرة أخرى.");
       error.status = response.status;
       throw error;
@@ -169,8 +380,8 @@ async function sendMessage(text) {
 
     const reply = typeof result.text === "string" ? result.text.trim() : "";
     if (!reply) throw new Error("لم يصل رد نصي من Gemini. حاول مرة أخرى.");
-    messages = [...messages, { role: "user", text: trimmedText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
-    await speakReply(trimmedText, reply, result.audio, result.audioMimeType, currentAttempt);
+    messages = [...messages, { role: "user", text: userText }, { role: "model", text: reply }].slice(-MAX_HISTORY);
+    await speakReply(userText, reply, result.audio, result.audioMimeType, currentAttempt);
   } catch (error) {
     if (currentAttempt !== attempt || (error && error.name === "AbortError")) return;
     console.error("Unable to get a Gemini response:", error);
@@ -186,13 +397,22 @@ async function sendMessage(text) {
 }
 
 function createRecognition() {
-  recognition = new BrowserSpeechRecognition();
+  if (!BrowserSpeechRecognition) {
+    void startAudioFallback();
+    return;
+  }
+  try {
+    recognition = new BrowserSpeechRecognition();
+  } catch (error) {
+    console.error("Unable to create browser speech recognition:", error);
+    void startAudioFallback();
+    return;
+  }
   recognition.lang = "ar-SA";
   recognition.continuous = true;
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
-    recognitionRetryDelay = 800;
     if (state === "listening") status.textContent = "تحدث الآن؛ سيجيب بصير بعد انتهاء كلامك.";
   };
   recognition.onresult = (event) => {
@@ -200,6 +420,8 @@ function createRecognition() {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       const result = event.results[index];
       if (result.isFinal && result[0].transcript.trim()) {
+        recognitionNetworkFailures = 0;
+        recognitionRetryDelay = 800;
         void sendMessage(result[0].transcript);
         return;
       }
@@ -213,6 +435,13 @@ function createRecognition() {
       return;
     }
     if (event.error === "network") {
+      recognitionNetworkFailures += 1;
+      if (recognitionNetworkFailures >= 3 && typeof MediaRecorder !== "undefined") {
+        releaseRecognition();
+        status.textContent = "سأستخدم طريقة استماع بديلة لهذا المتصفح.";
+        void startAudioFallback();
+        return;
+      }
       status.textContent = "تعذّر اتصال خدمة التعرّف على الكلام؛ سأعيد المحاولة تلقائيًا.";
       recognitionRetryDelay = Math.min(recognitionRetryDelay * 2, 10000);
       console.warn("Browser speech recognition network error; retrying.");
@@ -235,10 +464,6 @@ function createRecognition() {
 
 function startConversation() {
   if (state !== "idle") return;
-  if (!BrowserSpeechRecognition) {
-    updateState("idle", "المحادثة الصوتية تحتاج Chrome أو Edge يدعم التعرّف على العربية.");
-    return;
-  }
   if (location.protocol !== "https:" && location.hostname !== "localhost") {
     updateState("idle", "تحتاج المحادثة إلى فتح الرابط المنشور الآمن (HTTPS).");
     return;
@@ -246,6 +471,8 @@ function startConversation() {
 
   attempt += 1;
   messages = [];
+  inputMode = "speech";
+  recognitionNetworkFailures = 0;
   transcript.textContent = "";
   updateState("listening", "جارٍ تشغيل الميكروفون... اسمح بإذن الميكروفون عند الطلب.");
   window.dispatchEvent(new Event("baseer:conversation-start"));
