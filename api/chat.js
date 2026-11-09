@@ -79,7 +79,7 @@ module.exports = async function generateChatReply(request, response) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 50000);
   let text = "";
   try {
     const upstream = await fetch(GEMINI_URL, {
